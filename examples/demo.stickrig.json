@@ -1,0 +1,518 @@
+{
+  "format": "stickrig-project",
+  "schema_version": 1,
+  "project_id": "project-6109d88b84",
+  "name": "Training Hall — StickRig v0.1",
+  "revision": 0,
+  "settings": {
+    "fps": 12,
+    "resolution": {
+      "width": 960,
+      "height": 540
+    }
+  },
+  "scenes": [
+    {
+      "id": "main",
+      "name": "Main scene",
+      "duration_frames": 36,
+      "camera": {
+        "center": [
+          480.0,
+          270.0
+        ],
+        "zoom": 1.0
+      },
+      "layers": [
+        {
+          "id": "background",
+          "name": "Background",
+          "visible": true,
+          "locked": false
+        },
+        {
+          "id": "actors",
+          "name": "Actors",
+          "visible": true,
+          "locked": false
+        }
+      ],
+      "entities": [
+        {
+          "id": "line-26200f332f",
+          "kind": "line",
+          "layer_id": "background",
+          "a": [
+            25.0,
+            472.0
+          ],
+          "b": [
+            935.0,
+            472.0
+          ],
+          "color": "#293241",
+          "stroke_width": 3
+        },
+        {
+          "id": "line-971f870f18",
+          "kind": "line",
+          "layer_id": "background",
+          "a": [
+            460.0,
+            256.0
+          ],
+          "b": [
+            925.0,
+            256.0
+          ],
+          "color": "#293241",
+          "stroke_width": 3
+        },
+        {
+          "id": "line-9b9ef8260e",
+          "kind": "line",
+          "layer_id": "background",
+          "a": [
+            460.0,
+            256.0
+          ],
+          "b": [
+            460.0,
+            472.0
+          ],
+          "color": "#293241",
+          "stroke_width": 3
+        },
+        {
+          "id": "rectangle-46b136237f",
+          "kind": "rectangle",
+          "layer_id": "background",
+          "a": [
+            75.0,
+            314.0
+          ],
+          "b": [
+            160.0,
+            472.0
+          ],
+          "color": "#667085",
+          "stroke_width": 3
+        },
+        {
+          "id": "rectangle-a46b94ad8d",
+          "kind": "rectangle",
+          "layer_id": "background",
+          "a": [
+            820.0,
+            60.0
+          ],
+          "b": [
+            900.0,
+            256.0
+          ],
+          "color": "#667085",
+          "stroke_width": 3
+        },
+        {
+          "id": "circle-dff1309dfa",
+          "kind": "circle",
+          "layer_id": "background",
+          "a": [
+            142.0,
+            382.0
+          ],
+          "b": [
+            152.0,
+            392.0
+          ],
+          "color": "#667085",
+          "stroke_width": 3
+        },
+        {
+          "id": "line-acad48e41f",
+          "kind": "line",
+          "layer_id": "background",
+          "a": [
+            575.0,
+            256.0
+          ],
+          "b": [
+            760.0,
+            472.0
+          ],
+          "color": "#a0a7b4",
+          "stroke_width": 3
+        },
+        {
+          "id": "line-3f2201800c",
+          "kind": "line",
+          "layer_id": "background",
+          "a": [
+            548.0,
+            256.0
+          ],
+          "b": [
+            733.0,
+            472.0
+          ],
+          "color": "#a0a7b4",
+          "stroke_width": 3
+        },
+        {
+          "id": "hero",
+          "kind": "stickman",
+          "layer_id": "actors",
+          "position": [
+            275.0,
+            410.0
+          ],
+          "color": "#1a2334",
+          "stroke_width": 4,
+          "head_filled": true,
+          "pose": {}
+        },
+        {
+          "id": "opponent",
+          "kind": "stickman",
+          "layer_id": "actors",
+          "position": [
+            750.0,
+            410.0
+          ],
+          "color": "#c04d5d",
+          "stroke_width": 4,
+          "head_filled": false,
+          "pose": {}
+        }
+      ],
+      "tracks": [
+        {
+          "target_id": "hero",
+          "property": "position",
+          "keyframes": [
+            {
+              "frame": 0,
+              "value": [
+                275.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 6,
+              "value": [
+                350.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 12,
+              "value": [
+                430.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 18,
+              "value": [
+                485.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": [
+                505.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": [
+                520.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.elbow_r",
+          "keyframes": [
+            {
+              "frame": 0,
+              "value": -10.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 6,
+              "value": -40.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 12,
+              "value": -75.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 18,
+              "value": 35.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": -100.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": -15.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.elbow_l",
+          "keyframes": [
+            {
+              "frame": 0,
+              "value": 10.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 6,
+              "value": -30.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 18,
+              "value": 55.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": 15.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": 15.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.hip_l",
+          "keyframes": [
+            {
+              "frame": 6,
+              "value": -35.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": -10.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.knee_l",
+          "keyframes": [
+            {
+              "frame": 6,
+              "value": 40.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 18,
+              "value": 65.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.hip_r",
+          "keyframes": [
+            {
+              "frame": 12,
+              "value": 35.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": -20.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.knee_r",
+          "keyframes": [
+            {
+              "frame": 12,
+              "value": -35.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.wrist_r",
+          "keyframes": [
+            {
+              "frame": 12,
+              "value": -25.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "hero",
+          "property": "pose.spine",
+          "keyframes": [
+            {
+              "frame": 18,
+              "value": 28.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": -10.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": 0.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "opponent",
+          "property": "position",
+          "keyframes": [
+            {
+              "frame": 0,
+              "value": [
+                750.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 12,
+              "value": [
+                700.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 18,
+              "value": [
+                690.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": [
+                710.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": [
+                780.0,
+                410.0
+              ],
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "opponent",
+          "property": "pose.elbow_l",
+          "keyframes": [
+            {
+              "frame": 0,
+              "value": -20.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 12,
+              "value": -45.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 18,
+              "value": -90.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": 20.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": -10.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "opponent",
+          "property": "pose.elbow_r",
+          "keyframes": [
+            {
+              "frame": 0,
+              "value": 20.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 12,
+              "value": 60.0,
+              "interpolation": "hold"
+            }
+          ]
+        },
+        {
+          "target_id": "opponent",
+          "property": "pose.spine",
+          "keyframes": [
+            {
+              "frame": 18,
+              "value": -20.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 24,
+              "value": 45.0,
+              "interpolation": "hold"
+            },
+            {
+              "frame": 30,
+              "value": 0.0,
+              "interpolation": "hold"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

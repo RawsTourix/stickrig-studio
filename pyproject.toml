@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stickrig-studio"
+version = "0.1.0"
+description = "A lightweight 2D stick-figure animation editor with a machine-readable project format"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.7,<7", "Pillow>=10,<13"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+stickrig = "stickrig.app:main"
+stickrig-cli = "stickrig.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

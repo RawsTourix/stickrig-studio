@@ -1,72 +1,118 @@
 # StickRig Studio
 
-**StickRig Studio** — проект настольного редактора двумерной анимации, ориентированного на рисованных стикменов, покадровое позирование и открытое программное управление сценой.
+**StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-> **Статус:** концепция и проектная документация (docs-first). Рабочего прототипа пока нет. Описанные функции — требования и план, а не реализованные возможности.
+**Status: v0.1 prototype.** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
-## Идея
+## Quick start (Windows, Python 3.11+)
 
-В основе — опыт создания «мультиков на стикерах»: каждый новый лист чуть изменяет позу героя, а быстрое перелистывание оживляет сцену. Редактор должен сделать этот процесс удобным, **не заменяя ручную постановку движений автоматикой**.
+1. Install [Python](https://www.python.org/downloads/) and make sure `py` works in PowerShell.
+2. Clone or download this repository and open PowerShell in its root.
+3. Run:
 
-Задуманный сценарий: подготовить стикменов, оружие и окружение; расставлять персонажей и создавать кадры; просматривать движения с onion skin; при необходимости менять камеру; затем подбирать музыку и монтировать итоговый ролик.
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+python -m stickrig
+```
 
-**Человек** управляет историей, действиями и анимацией. **ИИ** может помогать с заготовками, окружением, расстановкой и повторяемыми операциями через открытый формат проекта и, в перспективе, MCP. Окончательное решение всегда остаётся за автором.
+If PowerShell does not allow activation, use ` .\.venv\Scripts\python.exe -m pip install -e ".[dev]" ` and ` .\.venv\Scripts\python.exe -m stickrig ` without activating the environment.
 
-## Три пространства
+To open the included sample animation:
 
-1. **Конструктор** — создание и редактирование персонажей, скелетов, оружия, предметов и фонов.
-2. **Анимация** — сцена, слои, покадровое редактирование, персонажи, камера, onion skin и предпросмотр.
-3. **Монтаж** — последовательность сцен, видео- и аудиодорожки, синхронизация с музыкой, экспорт.
+```powershell
+python -m stickrig examples/demo.stickrig.json
+```
 
-Все три режима работают **с одним редактируемым проектом**; монтаж не должен уничтожать исходные сцены.
+Alternatively run `stickrig` or `stickrig-cli` after installation. Video export requires a separate [FFmpeg](https://ffmpeg.org/download.html) installation with `ffmpeg` on the `PATH`. PNG export and editor preview don't require FFmpeg.
 
-## Принципы
+For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-- Начать анимацию должно быть легко: поставить стикмена, изменить позу, перейти к следующему кадру.
-- Простая графика: линии, круги, кривые, фигуры, цвет и настраиваемая толщина обводки.
-- Сквозная модель данных вместо хранения каждого кадра отдельным плоским изображением.
-- Фон и статичные объекты не копируются бесконечно между кадрами.
-- Масштаб **рабочего окна** не меняет масштаб **камеры**.
-- Undo/redo, сохранение, импорт/экспорт и восстановление проектов — базовые возможности.
-- Внешние скрипты и ИИ используют те же операции, что и интерфейс редактора.
-- Не перегружать начальную версию сложными эффектами и физикой.
+## Controls in v0.1
 
-## Документация
-
-| Раздел | Содержание |
+| Tool | Action |
 | --- | --- |
-| [Концепция и границы](docs/01-vision.md) | Цели, аудитория, вдохновение, принципы |
-| [Требования](docs/02-requirements.md) | Функциональность, приоритеты, критерии готовности |
-| [Сценарии работы и интерфейс](docs/03-workflows-ui.md) | Три режима, действия и взаимодействия |
-| [Объекты, скелеты и движение](docs/04-animation-model.md) | Структура персонажа, кинематика, камера, кадры |
-| [Формат проекта](docs/05-project-format.md) | Хранение, идентификаторы, ключевые кадры, пример JSON |
-| [Техническая архитектура](docs/06-architecture.md) | Python/Qt, разделение ядра и UI, экспорт |
-| [ИИ и MCP](docs/07-ai-mcp.md) | Программные инструменты, безопасность и предпросмотр |
-| [Дорожная карта](docs/08-roadmap.md) | Вертикальный прототип, этапы разработки |
-| [Решения и открытые вопросы](docs/09-decisions.md) | Принятые гипотезы и то, что предстоит проверить |
-| [Проверочный сценарий](docs/10-acceptance-scenario.md) | Небольшая сцена боя для сквозного тестирования |
+| `+ Stickman` | Click the canvas to add a basic stickman |
+| `Select / Move` | Drag a blue joint handle to pose a limb; drag a bone to move the whole figure |
+| `Line`, `Rectangle`, `Ellipse` | Click-drag to draw editable simple shapes |
+| `+ Copy next` | Insert a frame after the current frame; inherit the current pose |
+| `Delete frame` | Delete the current animation frame |
+| `Onion skin` | Show translucent pose from the previous frame (without ghosting static background) |
+| `▶ Play` | Preview animation with the selected FPS |
+| `Frame camera` (`Ctrl+0`) | Recenter the canvas view on the camera frame |
+| Middle mouse / mouse wheel | Pan / zoom **editor viewport**, independently from camera |
+| `Grid`, `Snap (10)` | Toggle viewport grid and 10-unit position snapping |
+| Inspector | Change object color, fill stickman's head, delete objects; lock/hide layers; adjust **static** camera |
+| `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save, undo, redo |
+| `←`, `→`, `Space`, `Ctrl+D` | Previous/next frame, play/pause, insert duplicate hold frame |
 
-## Предполагаемая технология
+Other capabilities: create/open/save structured `.stickrig.json`, silent MP4 export, PNG export, single-scene hold-keyframe animation and multiple independent characters.
 
-- **Python 3.11+** и **PySide6 / Qt 6**, включая `QGraphicsScene` / `QGraphicsView` — первоначальная гипотеза для Windows-приложения.
-- Независимое от Qt ядро данных/команд; сериализация JSON.
-- **FFmpeg** — возможный экспорт видео и звука.
-- **MCP** — дополнительный адаптер поверх собственных команд редактора, не обязательный для запуска.
+**Limitations:** only one scene; one basic rig; hold frames only (no interpolation/IK); static camera; shapes are not keyframable; no weapon asset editor, audio montage or live MCP server yet. These are documented future milestones, not implemented features. Layer visibility currently applies to both editor and export. Animation remains fully offline.
 
-Технологии могут измениться после измерения производительности и проверки прототипа. Ссылки на официальную документацию приведены в [архитектуре](docs/06-architecture.md) и [ИИ/MCP](docs/07-ai-mcp.md).
+## AI-assisted workflow — already testable without MCP
 
-## План первого результата
+The format is readable JSON. `stickrig-cli` provides validated, transactional scene edits. The AI can generate a JSON patch; a human reviews it with `--dry-run` and applies it explicitly. The CLI **never** executes code from JSON.
 
-Минимальный вертикальный срез: сцена и камера → стикмен с управляемыми суставами → создание/дублирование кадров → onion skin → воспроизведение → сохранение/загрузка → экспорт короткого ролика. Конструктор сложного оружия, MCP и монтаж с несколькими дорожками выполняются позже.
+```powershell
+# Inspect the current state and revision
+python -m stickrig.cli inspect examples/demo.stickrig.json
 
-Критерии подробно изложены в [требованиях](docs/02-requirements.md) и [дорожной карте](docs/08-roadmap.md).
+# Create a blank project, then examine the sample background patch
+python -m stickrig.cli new my-project.stickrig.json
+python -m stickrig.cli apply my-project.stickrig.json examples/training_hall_patch.json --dry-run
 
-## О статусе проекта
+# Save modifications to a SEPARATE file (original stays unchanged)
+python -m stickrig.cli apply my-project.stickrig.json examples/training_hall_patch.json --output new-project.stickrig.json
+python -m stickrig new-project.stickrig.json
 
-- Документация описывает **намерения**, а не существующие функции.
-- Название проекта — **StickRig Studio**; юридическая проверка товарных знаков и лицензия пока не определены.
-- Вдохновение редакторами и роликами прошлого не означает копирования чужих интерфейсов, кода, персонажей, музыки или видеоматериалов.
+# Render one frame and export the animation without opening Qt
+python -m stickrig.cli render new-project.stickrig.json --frame 0 --output preview.png
+python -m stickrig.cli export new-project.stickrig.json --output result.mp4
+```
 
----
+Patch JSON is `{ "expected_revision": 0, "operations": [...] }`. Allowed operations: `add_stickman`, `add_shape`, `set_color`, `set_position`, `set_joint_angle`, `set_layer_visibility`, `set_camera`, `delete_entity`. Validation rejects unknown references, duplicate IDs, non-finite coordinates, out-of-range frames and changes to locked layers. Stale revisions are rejected and invalid batches leave the original intact. To update the source directly, add the explicit `--in-place` flag.
 
-*Создавай движение, а не борись с инструментами.*
+**MCP status:** not implemented yet. CLI and JSON are the first integration layer; an MCP adapter can be built on the same functions after practical tests.
+
+## Project structure
+
+```text
+src/stickrig/model.py         # Versioned JSON model, rig math, frame edits and undo/redo
+src/stickrig/render.py        # Deterministic Pillow preview/FFmpeg video export
+src/stickrig/automation.py    # Validated atomic AI-friendly operations
+src/stickrig/cli.py           # Headless CLI for inspect/apply/render/export
+src/stickrig/app.py           # PySide6 GUI and pose interaction
+tests/                        # Core, rendering, AI patch and Qt smoke tests
+examples/                     # Example project and an AI-style scene patch
+docs/                         # Concept and development documentation
+```
+
+## Tests
+
+```powershell
+python -m pytest -q
+```
+
+GitHub Actions runs the test suite in a headless Linux Qt environment on pushes and PRs. The GUI smoke test is skipped if PySide6 is not installed; the rest of the suite can be exercised without a display.
+
+## Design and development documentation
+
+| Document | Content |
+| --- | --- |
+| [01 — Vision](docs/01-vision.md) | Motivation, UX principles and boundaries |
+| [02 — Requirements](docs/02-requirements.md) | Priorities, capabilities and acceptance checks |
+| [03 — UX](docs/03-workflows-ui.md) | Constructor, animator, montage |
+| [04 — Animation model](docs/04-animation-model.md) | Rig, joint angles, frames and camera |
+| [05 — Project format](docs/05-project-format.md) | Planned schema; v0.1 implementation described separately |
+| [06 — Architecture](docs/06-architecture.md) | Python/Qt modules and rendering |
+| [07 — AI / MCP](docs/07-ai-mcp.md) | Structured editing, safe operations and future MCP |
+| [08 — Roadmap](docs/08-roadmap.md) | Milestones and next steps |
+| [09 — Decisions](docs/09-decisions.md) | Assumptions and open questions |
+| [10 — Acceptance scenario](docs/10-acceptance-scenario.md) | Training-hall animation as a test |
+| [11 — Prototype v0.1](docs/11-prototype-v0.1.md) | Exact implemented features and current constraints |
+
+## Licensing and attribution
+
+No software license has yet been selected by the repository owner. References to historical animations and editors are used only to explain the product concept; no third-party video, music or protected assets are included.

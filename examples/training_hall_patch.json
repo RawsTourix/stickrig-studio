@@ -1,0 +1,46 @@
+{
+  "expected_revision": 0,
+  "operations": [
+    {
+      "op": "add_shape",
+      "id": "floor",
+      "layer_id": "background",
+      "kind": "line",
+      "a": [20, 465],
+      "b": [940, 465],
+      "color": "#252d39"
+    },
+    {
+      "op": "add_shape",
+      "id": "platform",
+      "layer_id": "background",
+      "kind": "line",
+      "a": [410, 225],
+      "b": [940, 225],
+      "color": "#252d39"
+    },
+    {
+      "op": "add_shape",
+      "id": "door",
+      "layer_id": "background",
+      "kind": "rectangle",
+      "a": [70, 280],
+      "b": [165, 465],
+      "color": "#252d39"
+    },
+    {
+      "op": "add_stickman",
+      "id": "hero",
+      "layer_id": "actors",
+      "position": [310, 415],
+      "color": "#17191f"
+    },
+    {
+      "op": "add_stickman",
+      "id": "opponent",
+      "layer_id": "actors",
+      "position": [710, 415],
+      "color": "#c04455"
+    }
+  ]
+}
