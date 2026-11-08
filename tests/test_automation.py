@@ -111,3 +111,16 @@ def test_ai_cannot_edit_locked_layer():
             {"op": "add_shape", "kind": "line", "a": [0, 0], "b": [4, 4]},
         ]})
     assert p.to_dict() == before
+
+
+def test_cli_inspect_exposes_keyframes_for_ai(tmp_path, capsys):
+    from stickrig.model import set_key
+    p = Project()
+    p.scene["entities"].append(make_stickman(20, 20, entity_id="hero"))
+    set_key(p, "hero", "pose.elbow_r", 3, 30)
+    path = tmp_path / "inspect.json"
+    save_project(p, path)
+    assert main(["inspect", str(path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["camera"]["zoom"] == 1
+    assert result["tracks"][0]["keyframes"][0]["value"] == 30

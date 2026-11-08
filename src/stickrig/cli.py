@@ -46,9 +46,10 @@ def main(argv: list[str] | None = None) -> int:
             response = {"valid": True, "revision": project.revision, "name": project.name,
                         "size": [project.width, project.height], "fps": project.fps,
                         "frames": project.duration,
+                        "camera": project.scene["camera"],
                         "layers": project.scene["layers"],
                         "entities": project.scene["entities"] if args.command == "inspect" else len(project.scene["entities"]),
-                        "tracks": len(project.scene["tracks"])}
+                        "tracks": project.scene["tracks"] if args.command == "inspect" else len(project.scene["tracks"])}
         elif args.command == "apply":
             project = load_project(args.path)
             with Path(args.patch).open("r", encoding="utf-8") as fh:
