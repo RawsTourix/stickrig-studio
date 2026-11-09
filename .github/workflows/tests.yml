@@ -19,5 +19,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
       - name: Install package and test tools
         run: python -m pip install -e '.[dev]'
+      - name: Window/grid/selection smoke tests (isolated Qt process)
+        run: timeout 120s python -X faulthandler -m pytest -vv tests/test_grid_window_selection.py
       - name: Unit tests and headless GUI smoke
         run: timeout 120s python -X faulthandler -m pytest -vv
