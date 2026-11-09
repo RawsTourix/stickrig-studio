@@ -14,7 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QSettings
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
+    QAbstractItemView, QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
     QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSpinBox,
@@ -575,6 +575,8 @@ class MainWindow(QMainWindow):
         self._thumb_epoch = 0
         self._thumb_pending = False
         self._thumb_cache = OrderedDict()
+        self._frame_focus_request = 0
+        self._focused_frame_row = None
         self._cursor_world = None
         self._building = True
         self.build_ui()
@@ -751,6 +753,7 @@ class MainWindow(QMainWindow):
         self.frames_list.verticalScrollBar().valueChanged.connect(
             lambda _: self.schedule_thumbnails()
         )
+        self.frames_list.viewport().installEventFilter(self)
         frame_layout.addWidget(self.frames_list, 1)
         # A single plus action creates a blank animation frame. Duplication is
         # available on the frame's quick-action buttons and context menu.
@@ -906,6 +909,10 @@ class MainWindow(QMainWindow):
         return QIcon(pix)
 
     def eventFilter(self, watched, event):
+        if (hasattr(self, "frames_list") and
+                watched is self.frames_list.viewport() and
+                event.type() == QEvent.Type.Resize):
+            QTimer.singleShot(0, self.schedule_thumbnails)
         if (watched in self._docks and
                 event.type() in (QEvent.Type.Move, QEvent.Type.Resize,
                                  QEvent.Type.Show, QEvent.Type.Hide)):
@@ -954,15 +961,69 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{'* ' if self.is_dirty else ''}{name} — StickRig Studio")
 
     def visible_frame_rows(self):
-        count = self.frames_list.count()
+        """Find viewport rows without depending on a hit in the item margin.
+
+        indexAt(5, 5) can return an invalid index when the first pixel falls
+        in a frame-card gap. Its previous fallback silently rendered rows 0..9
+        even if the viewport had scrolled to frames 11+. Rect-based binary
+        search works for offscreen QListWidget items as well as visible ones.
+        """
+        strip = self.frames_list
+        count = strip.count()
         if not count:
-            return ()
-        viewport = self.frames_list.viewport()
-        first = self.frames_list.indexAt(QPoint(5, 5))
-        last = self.frames_list.indexAt(QPoint(5, max(5, viewport.height() - 5)))
-        start = first.row() if first.isValid() else 0
-        stop = last.row() if last.isValid() else min(count - 1, start + 8)
-        return range(max(0, start - 1), min(count, max(start, stop) + 2))
+            return range(0)
+        viewport_height = strip.viewport().height()
+        if viewport_height <= 1:
+            return range(0, min(count, 3))
+
+        def bounds(row):
+            return strip.visualItemRect(strip.item(row))
+
+        lo, hi = 0, count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if bounds(mid).bottom() < 0:
+                lo = mid + 1
+            else:
+                hi = mid
+        first = lo
+
+        lo, hi = first, count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if bounds(mid).top() <= viewport_height:
+                lo = mid + 1
+            else:
+                hi = mid
+        last_exclusive = lo
+        return range(max(0, min(first, count) - 1),
+                     min(count, max(first + 1, last_exclusive) + 1))
+
+    def keep_active_frame_visible(self):
+        """Reveal the selected frame after Qt finishes relaying out the list."""
+        row = self.frame
+        strip = self.frames_list
+        if not (0 <= row < strip.count()):
+            return
+        item = strip.item(row)
+        rect = strip.visualItemRect(item)
+        viewport = strip.viewport().rect()
+        if rect.top() < viewport.top() or rect.bottom() > viewport.bottom():
+            strip.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+        self.schedule_thumbnails()
+
+    def request_active_frame_focus(self):
+        self._frame_focus_request += 1
+        request = self._frame_focus_request
+        # Reveal immediately when possible, and again after Qt recomputes
+        # item geometry following insertion/duplicate/deletion of a frame.
+        self.keep_active_frame_visible()
+
+        def deferred():
+            if request == self._frame_focus_request:
+                self.keep_active_frame_visible()
+
+        QTimer.singleShot(0, deferred)
 
     def schedule_thumbnails(self):
         if self.playing or self._thumb_pending or not self.frames_list.count():
@@ -977,8 +1038,10 @@ class MainWindow(QMainWindow):
         visible = set(self.visible_frame_rows())
         for old in list(self._thumb_cache):
             if old not in visible:
-                self.frames_list.item(old).setIcon(QIcon())
-                self.frames_list.item(old).setData(Qt.ItemDataRole.UserRole + 1, -1)
+                old_item = self.frames_list.item(old)
+                if old_item is not None:
+                    old_item.setIcon(QIcon())
+                    old_item.setData(Qt.ItemDataRole.UserRole + 1, -1)
                 del self._thumb_cache[old]
         for row in visible:
             item = self.frames_list.item(row)
@@ -998,7 +1061,8 @@ class MainWindow(QMainWindow):
             break
 
     def refresh_frames(self, *, content_changed):
-        if self.frames_list.count() != self.project.duration:
+        recreated = self.frames_list.count() != self.project.duration
+        if recreated:
             self.frames_list.blockSignals(True)
             self.frames_list.clear()
             self._thumb_cache.clear()
@@ -1032,6 +1096,10 @@ class MainWindow(QMainWindow):
             self.frames_list.blockSignals(True)
             self.frames_list.setCurrentRow(self.frame)
             self.frames_list.blockSignals(False)
+        changed_selection = self._focused_frame_row != self.frame
+        if recreated or changed_selection:
+            self._focused_frame_row = self.frame
+            self.request_active_frame_focus()
         if not self.playing:
             self.schedule_thumbnails()
 
