@@ -81,6 +81,7 @@ class Project:
     height: int = 540
     fps: int = 12
     revision: int = 0
+    workspace: dict[str, str] = field(default_factory=dict)
     scene: dict[str, Any] = field(default_factory=dict)
     project_id: str = field(default_factory=lambda: new_id("project"))
 
@@ -89,7 +90,7 @@ class Project:
             self.scene = {
                 "id": "main",
                 "name": "Main scene",
-                "duration_frames": 12,
+                "duration_frames": 1,
                 "camera": {"center": [self.width / 2, self.height / 2], "zoom": 1.0},
                 "layers": [
                     {"id": "background", "name": "Background", "visible": True, "locked": False},
@@ -110,6 +111,7 @@ class Project:
             "project_id": self.project_id,
             "name": self.name,
             "revision": self.revision,
+            "workspace": copy.deepcopy(self.workspace),
             "settings": {"fps": self.fps, "resolution": {"width": self.width, "height": self.height}},
             "scenes": [copy.deepcopy(self.scene)],
         }
@@ -144,12 +146,21 @@ class Project:
             raise ValueError("project name must be 1..160 characters")
         project_id = _id(data.get("project_id"), "project_id")
         result = cls(name=name, width=width, height=height, fps=fps,
-                     revision=rev, scene=copy.deepcopy(scenes[0]), project_id=project_id)
+                     revision=rev, workspace=copy.deepcopy(data.get("workspace", {})),
+                     scene=copy.deepcopy(scenes[0]), project_id=project_id)
         result.validate()
         return result
 
     def validate(self) -> None:
         _id(self.project_id, "project_id")
+        if not isinstance(self.workspace, dict) or set(self.workspace) - {"dock_state"}:
+            raise ValueError("workspace must contain only supported layout fields")
+        dock_state = self.workspace.get("dock_state", "")
+        if not isinstance(dock_state, str) or len(dock_state) > 200_000:
+            raise ValueError("workspace dock_state must be a bounded string")
+        if dock_state and (len(dock_state) % 4 or
+                           not all(c.isalnum() or c in "+/=" for c in dock_state)):
+            raise ValueError("workspace dock_state must be base64 text")
         if not 160 <= self.width <= 3840 or not 90 <= self.height <= 2160:
             raise ValueError("invalid resolution")
         if not 1 <= self.fps <= 60:

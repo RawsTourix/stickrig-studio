@@ -16,22 +16,22 @@ def test_window_project_edit_save_and_reopen(tmp_path):
     app = QApplication.instance() or QApplication([])
     w = MainWindow()
     try:
-        assert w.project.duration == 12
+        assert w.project.duration == 1
         w.add_stickman((350, 400))
         assert len(w.project.scene["entities"]) == 1
         w.add_frame()
-        assert w.project.duration == 13
+        assert w.project.duration == 2
         assert w.frame == 1
         w.undo()
-        assert w.project.duration == 12
+        assert w.project.duration == 1
         w.redo()
-        assert w.project.duration == 13
+        assert w.project.duration == 2
         path = tmp_path / "gui.stickrig.json"
         w.path = path
         assert w.save_file()
         w.load_file(path)
         assert len(w.project.scene["entities"]) == 1
-        assert w.project.duration == 13
+        assert w.project.duration == 2
     finally:
         w.saved_snapshot = w.project.to_dict()
         w.close()

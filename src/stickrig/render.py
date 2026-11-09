@@ -20,8 +20,13 @@ def visible_entities(project: Project):
                 yield entity
 
 
-def render_image(project: Project, frame: int = 0, *, antialias: int = 2):
-    """Return a PIL RGB image. Rendering does not depend on Qt/GUI."""
+def render_image(project: Project, frame: int = 0, *, antialias: int = 2,
+                 target_size: tuple[int, int] | None = None):
+    """Return a PIL RGB image at native or preview resolution, independent of Qt.
+
+    Small previews are rasterized directly at thumbnail resolution (not rendered
+    full-size and then scaled). This keeps the frame sidebar inexpensive.
+    """
     from PIL import Image, ImageDraw
 
     project.validate()
@@ -29,16 +34,25 @@ def render_image(project: Project, frame: int = 0, *, antialias: int = 2):
         raise ValueError("frame out of range")
     if antialias not in (1, 2, 3):
         raise ValueError("antialias must be 1, 2 or 3")
-    w, h, scale = project.width, project.height, antialias
+    if target_size is None:
+        w, h = project.width, project.height
+    else:
+        w, h = target_size
+        if (type(w) is not int or type(h) is not int or
+                not 1 <= w <= 3840 or not 1 <= h <= 2160):
+            raise ValueError("invalid preview size")
+    scale = antialias
     canvas = Image.new("RGB", (w * scale, h * scale), "white")
     draw = ImageDraw.Draw(canvas)
     cam = project.scene["camera"]
     cx, cy = cam["center"]
-    zoom = cam["zoom"] * scale
+    zoom_x = cam["zoom"] * scale * w / project.width
+    zoom_y = cam["zoom"] * scale * h / project.height
+    zoom = min(zoom_x, zoom_y)
 
     def pt(xy):
-        return ((xy[0] - cx) * zoom + w * scale / 2,
-                (xy[1] - cy) * zoom + h * scale / 2)
+        return ((xy[0] - cx) * zoom_x + w * scale / 2,
+                (xy[1] - cy) * zoom_y + h * scale / 2)
 
     for e in visible_entities(project):
         stroke = max(1, round(e["stroke_width"] * zoom))
