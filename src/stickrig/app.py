@@ -554,8 +554,8 @@ class MainWindow(QMainWindow):
             return
         self._layout_monitor.start()
 
-    def capture_workspace(self):
-        if self._restoring_layout:
+    def capture_workspace(self, force=False):
+        if self._restoring_layout and not force:
             return
         state = bytes(self.saveState().toBase64()).decode("ascii")
         if self.project.workspace.get("dock_state") != state:
@@ -975,7 +975,7 @@ class MainWindow(QMainWindow):
         self.canvas.frame_camera()
 
     def save_file(self):
-        self.capture_workspace()
+        self.capture_workspace(force=True)
         if not self.path:
             return self.save_as_file()
         try:
@@ -1054,7 +1054,7 @@ class MainWindow(QMainWindow):
                                 "Project is editable JSON; experimental AI patching via stickrig-cli.")
 
     def closeEvent(self, event):
-        self.capture_workspace()
+        self.capture_workspace(force=True)
         if self.check_unsaved():
             event.accept()
         else:
