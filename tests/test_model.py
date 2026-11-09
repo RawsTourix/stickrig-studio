@@ -11,6 +11,7 @@ from stickrig.model import (History, Project, RIG_OFFSETS, angle_for_drag, delet
 
 def project_with_actor():
     project = Project()
+    project.scene["duration_frames"] = 12
     hero = make_stickman(130, 270, "#223344", entity_id="hero")
     project.scene["entities"].append(hero)
     project.validate()
@@ -20,7 +21,7 @@ def project_with_actor():
 def test_new_project_valid():
     p = Project()
     p.validate()
-    assert p.duration == 12
+    assert p.duration == 1
     assert len(p.scene["layers"]) == 2
 
 
@@ -216,3 +217,29 @@ def test_corrupted_disk_project_not_overwritten(tmp_path):
     save_project(p, path)
     path.write_text("{invalid json", encoding="utf-8")
     assert disk_project_changed(path, p.to_dict())
+
+def test_new_project_only_one_visible_frame():
+    p = Project()
+    assert p.duration == 1
+    assert insert_frame(p, 0) == 1
+    assert p.duration == 2
+    assert delete_frame(p, 1) == 0
+    assert p.duration == 1
+
+
+def test_workspace_roundtrip_and_legacy_project(tmp_path):
+    p = Project()
+    p.workspace["dock_state"] = "YWJj"
+    target = tmp_path / "workspace.json"
+    save_project(p, target)
+    assert load_project(target).workspace == p.workspace
+    data = p.to_dict()
+    del data["workspace"]
+    assert Project.from_dict(data).workspace == {}
+
+
+def test_invalid_workspace_rejected():
+    p = Project()
+    p.workspace["dock_state"] = "???"
+    with pytest.raises(ValueError, match="base64"):
+        p.validate()

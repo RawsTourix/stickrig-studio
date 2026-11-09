@@ -22,6 +22,7 @@ def test_png_dimensions_and_nonwhite(tmp_path):
 def test_stickman_changes_pixels_between_frames():
     p = Project(width=320, height=180)
     p.scene["entities"].append(make_stickman(90, 100, entity_id="hero"))
+    p.scene["duration_frames"] = 9
     set_key(p, "hero", "position", 8, [220, 110])
     assert render_image(p, 0).tobytes() != render_image(p, 8).tobytes()
 
@@ -65,3 +66,15 @@ def test_mp4_duration_and_resolution(tmp_path):
     assert "width=320" in proc.stdout
     assert "height=180" in proc.stdout
     assert "nb_frames=6" in proc.stdout
+
+def test_small_thumbnail_matches_camera_and_dimensions():
+    p = Project(width=960, height=540)
+    p.scene["entities"].append(make_shape("line", [0, 270], [960, 270]))
+    image = render_image(p, 0, antialias=1, target_size=(128, 72))
+    assert image.size == (128, 72)
+    assert image.getpixel((64, 36)) != (255, 255, 255)
+
+
+def test_invalid_preview_size():
+    with pytest.raises(ValueError, match="preview size"):
+        render_image(Project(), 0, target_size=(0, 40))

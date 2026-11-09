@@ -8,13 +8,14 @@ from __future__ import annotations
 import copy
 import math
 import sys
+from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QBrush, QKeySequence, QPainter, QPen
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
-    QFileDialog, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
+    QDockWidget, QFileDialog, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QProgressDialog, QPushButton, QSpinBox,
     QStatusBar, QToolBar, QVBoxLayout, QWidget,
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
 from .model import (History, Project, RIG_OFFSETS, angle_for_drag, delete_frame, disk_project_changed,
                     get_entity, get_layer, insert_frame, joints_at, load_project,
                     make_shape, make_stickman, save_project, set_key, value_at)
-from .render import export_mp4, visible_entities
+from .render import export_mp4, render_image, visible_entities
 
 
 def _distance_segment(point, a, b) -> float:
@@ -80,10 +81,22 @@ class Canvas(QGraphicsView):
                        Qt.AspectRatioMode.KeepAspectRatio)
 
     def wheelEvent(self, event):
-        multiplier = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
-        factor = self.transform().m11()
-        if 0.05 < factor * multiplier < 12:
-            self.scale(multiplier, multiplier)
+        """Unmodified touchpad swipe/wheel pans; Ctrl+wheel zooms about the pointer."""
+        pixels, angles = event.pixelDelta(), event.angleDelta()
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            dy = pixels.y() if pixels.y() else angles.y() / 120 * 56
+            if dy:
+                factor = math.exp(max(-4.0, min(4.0, dy / 280)))
+                current = self.transform().m11()
+                if 0.05 < current * factor < 12:
+                    self.scale(factor, factor)
+        else:
+            dx = pixels.x() if pixels.x() else angles.x() / 120 * 56
+            dy = pixels.y() if pixels.y() else angles.y() / 120 * 56
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and not dx:
+                dx, dy = dy, 0
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - round(dx))
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - round(dy))
         event.accept()
 
     def _line(self, a, b, color, width, *, z=0, opacity=1.0, dash=False):
@@ -306,12 +319,19 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.advance_frame)
         self.setWindowTitle("StickRig Studio")
         self.resize(1380, 850)
+        self._docks = []
+        self._restoring_layout = False
+        self._thumb_epoch = 0
+        self._thumb_pending = False
+        self._thumb_cache = OrderedDict()
         self._building = True
         self.build_ui()
         self._building = False
         if path:
             self.load_file(Path(path))
         self.refresh()
+        if not path:
+            self.restore_workspace()
         QTimer.singleShot(0, self.canvas.frame_camera)
 
     def build_ui(self):
@@ -319,7 +339,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Choose Stickman, then click the canvas. Use Select to drag joints.")
         self._build_menus()
         toolbar = QToolBar("Tools", self)
-        toolbar.setMovable(False)
+        toolbar.setObjectName("drawing_toolbar")
+        toolbar.setMovable(True)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         self.tool_actions = {}
         for key, label in [("select", "Select / Move"), ("stickman", "+ Stickman"),
@@ -345,17 +366,12 @@ class MainWindow(QMainWindow):
         camera_button.clicked.connect(lambda: self.canvas.frame_camera())
         toolbar.addWidget(camera_button)
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        body = QHBoxLayout()
-        main_layout.addLayout(body, 1)
         self.canvas = Canvas(self)
-        body.addWidget(self.canvas, 1)
+        self.setCentralWidget(self.canvas)
         inspector = QWidget()
-        inspector.setFixedWidth(250)
         i_layout = QVBoxLayout(inspector)
-        body.addWidget(inspector)
+        self.inspector_dock = self.make_dock("Inspector", "inspector_dock",
+                                              inspector, Qt.DockWidgetArea.RightDockWidgetArea)
         selected_box = QGroupBox("Selection")
         select_layout = QVBoxLayout(selected_box)
         self.info_label = QLabel("Nothing selected")
@@ -380,7 +396,8 @@ class MainWindow(QMainWindow):
         lock_btn = QPushButton("Toggle selected layer lock")
         lock_btn.clicked.connect(self.toggle_layer_lock)
         layer_layout.addWidget(lock_btn)
-        i_layout.addWidget(layers_box)
+        self.layers_dock = self.make_dock("Layers", "layers_dock", layers_box,
+                                          Qt.DockWidgetArea.RightDockWidgetArea)
 
         cam_box = QGroupBox("Camera (static in v0.1)")
         cam_layout = QVBoxLayout(cam_box)
@@ -397,38 +414,245 @@ class MainWindow(QMainWindow):
             cam_layout.addWidget(QLabel(label))
             cam_layout.addWidget(field)
             field.editingFinished.connect(self.update_camera)
-        i_layout.addWidget(cam_box)
+        self.camera_dock = self.make_dock("Camera", "camera_dock", cam_box,
+                                          Qt.DockWidgetArea.RightDockWidgetArea)
         i_layout.addStretch(1)
 
-        timeline = QGroupBox("Timeline")
-        time_layout = QHBoxLayout(timeline)
-        main_layout.addWidget(timeline)
+        frames = QWidget()
+        frame_layout = QVBoxLayout(frames)
+        frame_layout.setContentsMargins(5, 5, 5, 5)
+        self.frames_list = QListWidget()
+        self.frames_list.setIconSize(QSize(128, 72))
+        self.frames_list.setSpacing(6)
+        self.frames_list.setMinimumWidth(210)
+        self.frames_list.currentRowChanged.connect(
+            lambda row: self.set_frame(row) if row >= 0 else None
+        )
+        self.frames_list.verticalScrollBar().valueChanged.connect(
+            lambda _: self.schedule_thumbnails()
+        )
+        frame_layout.addWidget(self.frames_list, 1)
+        controls = QHBoxLayout()
         for label, handler in (("|◀", self.first_frame), ("◀", self.prev_frame),
                                ("▶ Play", self.toggle_play), ("▶|", self.next_frame)):
             button = QPushButton(label)
             button.clicked.connect(handler)
-            time_layout.addWidget(button)
+            controls.addWidget(button)
             if label == "▶ Play":
                 self.play_btn = button
-        time_layout.addWidget(QLabel("Frame"))
-        self.frame_spin = QSpinBox()
-        self.frame_spin.setMinimum(1)
-        self.frame_spin.setMaximum(self.project.duration)
-        self.frame_spin.valueChanged.connect(lambda value: self.set_frame(value - 1))
-        time_layout.addWidget(self.frame_spin)
-        self.frame_total = QLabel("/ 12")
-        time_layout.addWidget(self.frame_total)
-        for label, handler in (("+ Copy next", self.add_frame),
-                               ("Delete frame", self.remove_frame)):
+        frame_layout.addLayout(controls)
+        frame_ops = QHBoxLayout()
+        for label, handler in (("+ Copy next", self.add_frame), ("Delete", self.remove_frame)):
             button = QPushButton(label)
             button.clicked.connect(handler)
-            time_layout.addWidget(button)
-        time_layout.addWidget(QLabel("FPS"))
+            frame_ops.addWidget(button)
+        frame_layout.addLayout(frame_ops)
+        options = QHBoxLayout()
+        options.addWidget(QLabel("Frame"))
+        self.frame_spin = QSpinBox()
+        self.frame_spin.setMinimum(1)
+        self.frame_spin.valueChanged.connect(lambda value: self.set_frame(value - 1))
+        options.addWidget(self.frame_spin)
+        self.frame_total = QLabel("/ 1")
+        options.addWidget(self.frame_total)
+        options.addWidget(QLabel("FPS"))
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 60)
         self.fps_spin.valueChanged.connect(self.change_fps)
-        time_layout.addWidget(self.fps_spin)
-        time_layout.addStretch(1)
+        options.addWidget(self.fps_spin)
+        frame_layout.addLayout(options)
+        self.frames_dock = self.make_dock(
+            "Frames", "frames_dock", frames, Qt.DockWidgetArea.LeftDockWidgetArea
+        )
+
+        library = QWidget()
+        library_layout = QVBoxLayout(library)
+        library_layout.addWidget(QLabel("Select a model, then click or drag on the canvas:"))
+        self.library_list = QListWidget()
+        self.library_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.library_list.setFlow(QListWidget.Flow.LeftToRight)
+        self.library_list.setWrapping(True)
+        self.library_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.library_list.setMovement(QListWidget.Movement.Static)
+        self.library_list.setIconSize(QSize(72, 52))
+        self.library_list.setGridSize(QSize(110, 90))
+        self.library_list.setMinimumHeight(115)
+        self.library_list.itemClicked.connect(
+            lambda item: self.select_tool(item.data(Qt.ItemDataRole.UserRole))
+        )
+        for key, label in (("stickman", "Stickman"), ("line", "Line"),
+                           ("rectangle", "Rectangle"), ("circle", "Ellipse")):
+            item = QListWidgetItem(self.library_icon(key), label)
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+            self.library_list.addItem(item)
+        library_layout.addWidget(self.library_list)
+        self.library_dock = self.make_dock(
+            "Elements", "library_dock", library, Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+
+        self.tabifyDockWidget(self.inspector_dock, self.layers_dock)
+        self.inspector_dock.raise_()
+        self.view_menu.addSeparator()
+        for dock in self._docks:
+            self.view_menu.addAction(dock.toggleViewAction())
+        self._default_dock_state = self.saveState()
+        self._layout_monitor = QTimer(self)
+        self._layout_monitor.setSingleShot(True)
+        self._layout_monitor.setInterval(200)
+        self._layout_monitor.timeout.connect(self.capture_workspace)
+        for dock in self._docks:
+            dock.installEventFilter(self)
+            dock.dockLocationChanged.connect(lambda _: self.schedule_layout_capture())
+            dock.topLevelChanged.connect(lambda _: self.schedule_layout_capture())
+            dock.visibilityChanged.connect(lambda _: self.schedule_layout_capture())
+
+    def make_dock(self, title, name, content, area):
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
+        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable |
+                         QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+                         QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        dock.setWidget(content)
+        self.addDockWidget(area, dock)
+        self._docks.append(dock)
+        return dock
+
+    @staticmethod
+    def library_icon(kind):
+        pix = QPixmap(72, 52)
+        pix.fill(QColor("#ffffff"))
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#20252d"), 3))
+        if kind == "stickman":
+            painter.drawEllipse(30, 5, 12, 12)
+            for a, b in [((36, 17), (36, 33)), ((36, 23), (19, 29)),
+                         ((36, 23), (53, 29)), ((36, 33), (24, 46)),
+                         ((36, 33), (48, 46))]:
+                painter.drawLine(a[0], a[1], b[0], b[1])
+        elif kind == "line":
+            painter.drawLine(10, 44, 62, 8)
+        elif kind == "rectangle":
+            painter.drawRect(11, 9, 50, 34)
+        elif kind == "circle":
+            painter.drawEllipse(21, 8, 30, 36)
+        painter.end()
+        return QIcon(pix)
+
+    def eventFilter(self, watched, event):
+        if (watched in self._docks and
+                event.type() in (QEvent.Type.Move, QEvent.Type.Resize,
+                                 QEvent.Type.Show, QEvent.Type.Hide)):
+            self.schedule_layout_capture()
+        return super().eventFilter(watched, event)
+
+    def schedule_layout_capture(self):
+        if (self._building or self._restoring_layout or
+                not hasattr(self, "_layout_monitor")):
+            return
+        self._layout_monitor.start()
+
+    def capture_workspace(self, force=False):
+        if self._restoring_layout and not force:
+            return
+        state = bytes(self.saveState().toBase64()).decode("ascii")
+        if self.project.workspace.get("dock_state") != state:
+            self.project.workspace["dock_state"] = state
+            self.refresh_title()
+
+    def restore_workspace(self):
+        self._restoring_layout = True
+        self._layout_monitor.stop()
+        value = self.project.workspace.get("dock_state")
+        if value:
+            state = QByteArray.fromBase64(QByteArray(value.encode("ascii")))
+            if not self.restoreState(state):
+                self.restoreState(self._default_dock_state)
+        else:
+            self.restoreState(self._default_dock_state)
+        QTimer.singleShot(0, self.finish_workspace_restore)
+
+    def finish_workspace_restore(self):
+        self._restoring_layout = False
+
+    def reset_workspace(self):
+        self._restoring_layout = True
+        self._layout_monitor.stop()
+        self.restoreState(self._default_dock_state)
+        self.project.workspace.pop("dock_state", None)
+        QTimer.singleShot(0, self.finish_workspace_restore)
+        self.refresh_title()
+
+    def refresh_title(self):
+        name = self.path.name if self.path else self.project.name
+        self.setWindowTitle(f"{'* ' if self.is_dirty else ''}{name} — StickRig Studio")
+
+    def visible_frame_rows(self):
+        count = self.frames_list.count()
+        if not count:
+            return ()
+        viewport = self.frames_list.viewport()
+        first = self.frames_list.indexAt(QPoint(5, 5))
+        last = self.frames_list.indexAt(QPoint(5, max(5, viewport.height() - 5)))
+        start = first.row() if first.isValid() else 0
+        stop = last.row() if last.isValid() else min(count - 1, start + 8)
+        return range(max(0, start - 1), min(count, max(start, stop) + 2))
+
+    def schedule_thumbnails(self):
+        if self.playing or self._thumb_pending or not self.frames_list.count():
+            return
+        self._thumb_pending = True
+        QTimer.singleShot(0, self.render_one_thumbnail)
+
+    def render_one_thumbnail(self):
+        self._thumb_pending = False
+        if self.playing:
+            return
+        visible = set(self.visible_frame_rows())
+        for old in list(self._thumb_cache):
+            if old not in visible:
+                self.frames_list.item(old).setIcon(QIcon())
+                self.frames_list.item(old).setData(Qt.ItemDataRole.UserRole + 1, -1)
+                del self._thumb_cache[old]
+        for row in visible:
+            item = self.frames_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole + 1) == self._thumb_epoch:
+                continue
+            width = 128
+            height = max(1, round(width * self.project.height / self.project.width))
+            image = render_image(self.project, row, antialias=1,
+                                 target_size=(width, height))
+            qimage = QImage(image.tobytes(), width, height, width * 3,
+                            QImage.Format.Format_RGB888).copy()
+            icon = QIcon(QPixmap.fromImage(qimage))
+            item.setIcon(icon)
+            item.setData(Qt.ItemDataRole.UserRole + 1, self._thumb_epoch)
+            self._thumb_cache[row] = icon
+            self.schedule_thumbnails()
+            break
+
+    def refresh_frames(self, *, content_changed):
+        if self.frames_list.count() != self.project.duration:
+            self.frames_list.blockSignals(True)
+            self.frames_list.clear()
+            self._thumb_cache.clear()
+            for row in range(self.project.duration):
+                item = QListWidgetItem(f"Frame {row + 1}")
+                item.setSizeHint(QSize(215, 90))
+                self.frames_list.addItem(item)
+            self.frames_list.blockSignals(False)
+            content_changed = True
+        if content_changed:
+            self._thumb_epoch += 1
+            self._thumb_cache.clear()
+        if self.frames_list.currentRow() != self.frame:
+            self.frames_list.blockSignals(True)
+            self.frames_list.setCurrentRow(self.frame)
+            self.frames_list.blockSignals(False)
+        if not self.playing:
+            self.schedule_thumbnails()
 
     def _build_menus(self):
         file_menu = self.menuBar().addMenu("File")
@@ -464,11 +688,15 @@ class MainWindow(QMainWindow):
             action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(callback)
             timeline_menu.addAction(action)
-        view_menu = self.menuBar().addMenu("View")
+        self.view_menu = self.menuBar().addMenu("View")
+        view_menu = self.view_menu
         action = QAction("Fit camera", self)
         action.setShortcut(QKeySequence("Ctrl+0"))
         action.triggered.connect(lambda: self.canvas.frame_camera())
         view_menu.addAction(action)
+        reset = QAction("Reset workspace", self)
+        reset.triggered.connect(self.reset_workspace)
+        view_menu.addAction(reset)
         help_menu = self.menuBar().addMenu("Help")
         about = QAction("About / keyboard shortcuts", self)
         about.triggered.connect(self.about)
@@ -523,9 +751,9 @@ class MainWindow(QMainWindow):
 
     def after_change(self):
         self.project.validate()
-        self.refresh()
+        self.refresh(content_changed=True)
 
-    def refresh(self):
+    def refresh(self, *, content_changed=True):
         if self._building:
             return
         self.frame = max(0, min(self.frame, self.project.duration - 1))
@@ -543,11 +771,12 @@ class MainWindow(QMainWindow):
             spinner.blockSignals(True)
             spinner.setValue(value)
             spinner.blockSignals(False)
-        self.refresh_inspector()
-        self.refresh_layers()
+        if content_changed:
+            self.refresh_inspector()
+            self.refresh_layers()
+        self.refresh_frames(content_changed=content_changed)
         self.canvas.redraw()
-        name = self.path.name if self.path else self.project.name
-        self.setWindowTitle(f"{'* ' if self.is_dirty else ''}{name} — StickRig Studio")
+        self.refresh_title()
 
     def refresh_inspector(self):
         try:
@@ -650,7 +879,7 @@ class MainWindow(QMainWindow):
 
     def set_frame(self, frame):
         self.frame = max(0, min(self.project.duration - 1, frame))
-        self.refresh()
+        self.refresh(content_changed=False)
 
     def add_frame(self):
         if self.playing:
@@ -679,11 +908,15 @@ class MainWindow(QMainWindow):
         self.set_frame((self.frame + 1) % self.project.duration)
 
     def undo(self):
+        workspace = copy.deepcopy(self.project.workspace)
         self.project = self.history.undo(self.project)
+        self.project.workspace = workspace
         self.after_change()
 
     def redo(self):
+        workspace = copy.deepcopy(self.project.workspace)
         self.project = self.history.redo(self.project)
+        self.project.workspace = workspace
         self.after_change()
 
     def check_unsaved(self):
@@ -701,6 +934,7 @@ class MainWindow(QMainWindow):
         return True
 
     def new_project(self):
+        self.capture_workspace()
         if not self.check_unsaved():
             return
         self.stop_playback()
@@ -711,9 +945,11 @@ class MainWindow(QMainWindow):
         self.selected_id = self.selected_joint = None
         self.saved_snapshot = self.project.to_dict()
         self.refresh()
+        self.restore_workspace()
         self.canvas.frame_camera()
 
     def open_file(self):
+        self.capture_workspace()
         if not self.check_unsaved():
             return
         name, _ = QFileDialog.getOpenFileName(self, "Open StickRig project", "",
@@ -735,9 +971,11 @@ class MainWindow(QMainWindow):
         self.selected_id = self.selected_joint = None
         self.saved_snapshot = self.project.to_dict()
         self.refresh()
+        self.restore_workspace()
         self.canvas.frame_camera()
 
     def save_file(self):
+        self.capture_workspace(force=True)
         if not self.path:
             return self.save_as_file()
         try:
@@ -811,10 +1049,12 @@ class MainWindow(QMainWindow):
                                 "Frames: + Copy next / Delete frame, Onion skin.\n"
                                 "Camera: static X/Y/zoom, Frame camera (Ctrl+0).\n"
                                 "Undo/Redo: Ctrl+Z / Ctrl+Y. Save: Ctrl+S.\n"
-                                "Pan: middle mouse. Zoom: wheel.\n\n"
+                                "Pan: touchpad swipe / wheel / middle mouse. Zoom: Ctrl+wheel.\n"
+                                "Docks: drag, resize, close, reopen from View menu.\n\n"
                                 "Project is editable JSON; experimental AI patching via stickrig-cli.")
 
     def closeEvent(self, event):
+        self.capture_workspace(force=True)
         if self.check_unsaved():
             event.accept()
         else:
