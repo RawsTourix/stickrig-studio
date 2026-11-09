@@ -243,3 +243,88 @@ def test_invalid_workspace_rejected():
     p.workspace["dock_state"] = "???"
     with pytest.raises(ValueError, match="base64"):
         p.validate()
+
+
+def test_hidden_frames_roundtrip_insert_delete(tmp_path):
+    from stickrig.model import playable_frames, toggle_frame_hidden
+    project = Project()
+    project.scene["duration_frames"] = 5
+    assert playable_frames(project) == [0, 1, 2, 3, 4]
+    assert toggle_frame_hidden(project, 2)
+    assert toggle_frame_hidden(project, 4)
+    assert playable_frames(project) == [0, 1, 3]
+    assert insert_frame(project, 2) == 3
+    assert project.scene["hidden_frames"] == [2, 3, 5]
+    assert delete_frame(project, 3) == 3
+    assert project.scene["hidden_frames"] == [2, 4]
+    target = tmp_path / "hidden.json"
+    save_project(project, target)
+    assert load_project(target).scene["hidden_frames"] == [2, 4]
+
+
+def test_hide_validation_rejects_invalid_or_repeated_indices():
+    project = Project()
+    project.scene["duration_frames"] = 4
+    project.scene["hidden_frames"] = [2, 1]
+    with pytest.raises(ValueError, match="hidden_frames"):
+        project.validate()
+    project.scene["hidden_frames"] = [1, 1]
+    with pytest.raises(ValueError, match="hidden_frames"):
+        project.validate()
+    project.scene["hidden_frames"] = [True]
+    with pytest.raises(ValueError, match="hidden_frames"):
+        project.validate()
+
+
+@pytest.mark.parametrize("source,destination", [(0, 8), (8, 0), (3, 7), (6, 2), (5, 5)])
+def test_move_frame_preserves_pose_values(source, destination):
+    from stickrig.model import move_frame, playable_frames
+    project = Project()
+    project.scene["duration_frames"] = 9
+    entity = make_stickman(120, 150, entity_id="hero")
+    project.scene["entities"].append(entity)
+    for f, position in [(0, [120, 150]), (2, [210, 160]), (5, [340, 170]), (8, [480, 190])]:
+        set_key(project, "hero", "position", f, position)
+    for f, angle in [(1, 30), (3, -80), (6, 45), (8, 8)]:
+        set_key(project, "hero", "pose.elbow_l", f, angle)
+    project.scene["hidden_frames"] = [2, 6]
+    poses = [
+        (value_at(project, entity, "position", frame),
+         value_at(project, entity, "pose.elbow_l", frame),
+         frame in project.scene["hidden_frames"])
+        for frame in range(project.duration)
+    ]
+    moved = poses.pop(source)
+    poses.insert(destination, moved)
+    move_frame(project, source, destination)
+    project.validate()
+    assert len(playable_frames(project)) == 7
+    result = [
+        (value_at(project, entity, "position", frame),
+         value_at(project, entity, "pose.elbow_l", frame),
+         frame in project.scene["hidden_frames"])
+        for frame in range(project.duration)
+    ]
+    assert result == poses
+
+
+def test_delete_keyframe_keeps_surviving_frame_pose():
+    project = Project()
+    project.scene["duration_frames"] = 4
+    entity = make_stickman(100, 200, entity_id="hero")
+    project.scene["entities"].append(entity)
+    set_key(project, "hero", "pose.knee_r", 1, 55)
+    set_key(project, "hero", "pose.elbow_r", 0, 35)
+    before = [
+        (value_at(project, entity, "pose.knee_r", f),
+         value_at(project, entity, "pose.elbow_r", f))
+        for f in range(4)
+    ]
+    delete_frame(project, 1)
+    after = [
+        (value_at(project, entity, "pose.knee_r", f),
+         value_at(project, entity, "pose.elbow_r", f))
+        for f in range(3)
+    ]
+    assert after == [before[0], before[2], before[3]]
+    project.validate()

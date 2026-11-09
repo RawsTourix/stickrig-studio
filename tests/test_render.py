@@ -78,3 +78,27 @@ def test_small_thumbnail_matches_camera_and_dimensions():
 def test_invalid_preview_size():
     with pytest.raises(ValueError, match="preview size"):
         render_image(Project(), 0, target_size=(0, 40))
+
+
+def test_hidden_frames_in_preview_and_export(tmp_path):
+    from stickrig.model import playable_frames
+    project = Project(width=320, height=180)
+    project.scene["duration_frames"] = 4
+    project.scene["hidden_frames"] = [1, 3]
+    assert playable_frames(project) == [0, 2]
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        target = tmp_path / "visible.mp4"
+        export_mp4(project, target)
+        output = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(target)],
+            text=True
+        ).strip()
+        assert output == "2"
+
+
+def test_export_rejects_all_hidden_frames(tmp_path):
+    project = Project(width=320, height=180)
+    project.scene["hidden_frames"] = [0]
+    with pytest.raises(ValueError, match="all frames are hidden"):
+        export_mp4(project, tmp_path / "none.mp4")
