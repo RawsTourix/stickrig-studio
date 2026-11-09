@@ -5,10 +5,14 @@ Hit targets are shared by painting, mouse handling and tests.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QMimeData, QPoint, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QDrag, QPainter, QPainterPath, QPen
+from PySide6.QtCore import (
+    QByteArray, QEasingCurve, QMimeData, QPoint, QRect, QRectF, QSize, Qt,
+    QTimer, QVariantAnimation,
+)
+from PySide6.QtGui import QColor, QCursor, QDrag, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QListWidget, QMenu, QStyle, QStyledItemDelegate,
+    QApplication, QGraphicsOpacityEffect, QLabel, QListWidget, QMenu, QStyle,
+    QStyledItemDelegate, QStyleOptionViewItem,
 )
 
 from .i18n import tr
@@ -84,6 +88,19 @@ class FrameDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        view = self.parent()
+        row = index.row()
+        if getattr(view, "_drag_active", False):
+            if row == view._active_source:
+                painter.setOpacity(0.12)
+            else:
+                shifted = QStyleOptionViewItem(option)
+                shifted.rect = option.rect.translated(
+                    0, round(view._gap_offsets.get(row, 0.0))
+                )
+                option = shifted
+        if row == getattr(view, "_settle_row", -1):
+            painter.setOpacity(0.25 + 0.75 * view._settle_progress)
         rect = option.rect.adjusted(3, 3, -3, -3)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
@@ -160,13 +177,40 @@ class FrameStrip(QListWidget):
         self.setItemDelegate(FrameDelegate(self))
         self.setAcceptDrops(True)
         self.setDragEnabled(False)
-        self.setDropIndicatorShown(True)
+        self.setDropIndicatorShown(False)  # Our own insertion line follows the pointer.
+        self.setAutoScroll(False)  # Controlled auto-scroll remains active while pointer is held.
         self.setDragDropMode(QListWidget.DragDropMode.DropOnly)
         self.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.setSpacing(4)
+        self.setMouseTracking(True)
+
         self._drag_source = None
         self._drag_origin = QPoint()
-        self.setMouseTracking(True)
+        self._drag_active = False
+        self._active_source = -1
+        self._drop_slot = None
+        self._drop_target = None
+        self._gap_offsets: dict[int, float] = {}
+        self._gap_from: dict[int, float] = {}
+        self._gap_to: dict[int, float] = {}
+        self._drag_card: QPixmap | None = None
+        self._drag_hotspot = QPoint()
+        self._pending_settle = None
+        self._settle_row = -1
+        self._settle_progress = 1.0
+        self._settle_overlay = None
+        self._settle_animation = None
+
+        self._gap_animation = QVariantAnimation(self)
+        self._gap_animation.setDuration(140)
+        self._gap_animation.setStartValue(0.0)
+        self._gap_animation.setEndValue(1.0)
+        self._gap_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._gap_animation.valueChanged.connect(self._step_gap)
+
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(30)
+        self._scroll_timer.timeout.connect(self._auto_scroll)
 
     def _frame_at(self, pos):
         item = self.itemAt(pos)
@@ -182,6 +226,20 @@ class FrameStrip(QListWidget):
             self.editor.duplicate_frame_at(index)
         else:
             self.editor.delete_frame_at(index)
+
+    def _drag_pixmap(self, row):
+        """Render one item with its existing preview, not a full list screenshot."""
+        item_rect = self.visualItemRect(self.item(row))
+        card = QPixmap(item_rect.size())
+        card.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(card)
+        option = QStyleOptionViewItem()
+        option.rect = QRect(QPoint(), item_rect.size())
+        option.state = QStyle.StateFlag.State_Selected
+        option.widget = self
+        self.itemDelegate().paint(painter, option, self.model().index(row, 0))
+        painter.end()
+        return card
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -205,12 +263,9 @@ class FrameStrip(QListWidget):
                 (event.position().toPoint() - self._drag_origin).manhattanLength() >=
                 QApplication.startDragDistance()):
             row = self._drag_source
+            origin = QPoint(self._drag_origin)
             self._drag_source = None
-            drag = QDrag(self)
-            payload = QMimeData()
-            payload.setData(FRAME_MIME, QByteArray(str(row).encode("ascii")))
-            drag.setMimeData(payload)
-            drag.exec(Qt.DropAction.MoveAction)
+            self._start_drag(row, origin)
             return
         pos = event.position().toPoint()
         row = self._frame_at(pos)
@@ -231,6 +286,165 @@ class FrameStrip(QListWidget):
         self._drag_source = None
         super().mouseReleaseEvent(event)
 
+    def _start_drag(self, source: int, origin: QPoint):
+        if self.count() < 2:
+            return
+        self._cancel_settle()
+        rect = self.visualItemRect(self.item(source))
+        self._drag_card = self._drag_pixmap(source)
+        self._drag_hotspot = origin - rect.topLeft()
+        self._drag_active = True
+        self._active_source = source
+        self._drop_target = source
+        self._drop_slot = source
+        self._gap_offsets.clear()
+        self.viewport().update()
+        self._scroll_timer.start()
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(FRAME_MIME, QByteArray(str(source).encode("ascii")))
+        drag.setMimeData(mime)
+        drag.setPixmap(self._drag_card)
+        drag.setHotSpot(self._drag_hotspot)
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self._finish_drag()
+
+    def _finish_drag(self):
+        self._scroll_timer.stop()
+        self._gap_animation.stop()
+        self._drag_active = False
+        self._active_source = -1
+        self._drop_slot = None
+        self._drop_target = None
+        self._gap_offsets.clear()
+        self._gap_from.clear()
+        self._gap_to.clear()
+        self.viewport().update()
+        if self._pending_settle is not None:
+            QTimer.singleShot(0, self._animate_settle)
+        else:
+            self._drag_card = None
+
+    def _visible_rows(self) -> range:
+        """Limit animation bookkeeping to rows near the viewport, even for 100k frames."""
+        if not self.count():
+            return range(0)
+        h = self.viewport().height()
+        top = self.indexAt(QPoint(8, 0))
+        bottom = self.indexAt(QPoint(8, max(0, h - 1)))
+        lo = top.row() if top.isValid() else max(0, self.indexAt(QPoint(8, min(10, h // 2))).row())
+        hi = bottom.row() if bottom.isValid() else lo + max(6, h // (CARD_HEIGHT + 4) + 3)
+        return range(max(0, lo - 2), min(self.count(), max(lo, hi) + 3))
+
+    def _offset_targets(self, destination: int) -> dict[int, float]:
+        source = self._active_source
+        if source < 0 or destination == source:
+            return {}
+        step = CARD_HEIGHT + self.spacing()
+        if source < destination:
+            return {row: -float(step) for row in self._visible_rows()
+                    if source < row <= destination}
+        return {row: float(step) for row in self._visible_rows()
+                if destination <= row < source}
+
+    def _animate_gap(self, destination: int, *, immediate=False):
+        if not self._drag_active:
+            return
+        targets = self._offset_targets(destination)
+        if destination == self._drop_target and targets == self._gap_to:
+            return
+        self._drop_target = destination
+        self._gap_animation.stop()
+        self._gap_from = dict(self._gap_offsets)
+        self._gap_to = targets
+        if immediate:
+            self._gap_offsets = dict(targets)
+            self.viewport().update()
+        else:
+            self._gap_animation.start()
+
+    def _step_gap(self, value):
+        ratio = float(value)
+        keys = self._gap_from.keys() | self._gap_to.keys()
+        self._gap_offsets = {
+            row: self._gap_from.get(row, 0.0) * (1 - ratio) +
+                 self._gap_to.get(row, 0.0) * ratio
+            for row in keys
+        }
+        self.viewport().update()
+
+    def _insertion_slot(self, point: QPoint) -> int:
+        if not self.count():
+            return 0
+        target = self.indexAt(point)
+        if target.isValid():
+            row = target.row()
+            rect = self.visualItemRect(self.item(row))
+            return row + int(point.y() > rect.center().y())
+        rows = list(self._visible_rows())
+        if not rows:
+            return self.count()
+        first, last = rows[0], rows[-1]
+        return first if point.y() < self.visualItemRect(self.item(first)).center().y() else min(self.count(), last + 1)
+
+    def _update_target(self, point: QPoint):
+        if not self._drag_active:
+            return
+        slot = self._insertion_slot(point)
+        destination = slot - int(slot > self._active_source)
+        destination = max(0, min(self.count() - 1, destination))
+        self._drop_slot = slot
+        self._animate_gap(destination)
+        self.viewport().update()
+
+    def _insertion_line_y(self):
+        slot = self._drop_slot
+        if slot is None or not self.count():
+            return None
+        if slot < self.count():
+            return self.visualItemRect(self.item(slot)).top() - self.spacing() // 2
+        return self.visualItemRect(self.item(self.count() - 1)).bottom() + self.spacing() // 2
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._drag_active or self._drop_slot is None:
+            return
+        y = self._insertion_line_y()
+        if y is None or y < 1 or y >= self.viewport().height():
+            return
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#8255d5"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(14, y, max(15, self.viewport().width() - 14), y)
+        painter.setBrush(QColor("#8255d5"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QRectF(8, y - 4, 8, 8))
+        painter.end()
+
+    def _auto_scroll(self):
+        if not self._drag_active:
+            return
+        local = self.viewport().mapFromGlobal(QCursor.pos())
+        rect = self.viewport().rect()
+        if not (-45 <= local.x() <= rect.width() + 45):
+            return
+        band = min(65, max(20, rect.height() // 4))
+        speed = 0
+        if 0 <= local.y() < band:
+            speed = -max(2, round((band - local.y()) * 0.25))
+        elif rect.height() - band < local.y() <= rect.height():
+            speed = max(2, round((local.y() - (rect.height() - band)) * 0.25))
+        if speed:
+            scroll = self.verticalScrollBar()
+            previous = scroll.value()
+            scroll.setValue(previous + speed)
+            if scroll.value() != previous:
+                self._update_target(local)
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(FRAME_MIME) and event.source() is self:
             event.acceptProposedAction()
@@ -239,12 +453,20 @@ class FrameStrip(QListWidget):
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasFormat(FRAME_MIME) and event.source() is self:
+            self._update_target(event.position().toPoint())
             event.acceptProposedAction()
         else:
             event.ignore()
 
+    def dragLeaveEvent(self, event):
+        self._drop_slot = None
+        self._animate_gap(self._active_source)
+        self.viewport().update()
+        event.accept()
+
     def dropEvent(self, event):
-        if not event.mimeData().hasFormat(FRAME_MIME) or event.source() is not self:
+        if (not self._drag_active or event.source() is not self or
+                not event.mimeData().hasFormat(FRAME_MIME)):
             event.ignore()
             return
         try:
@@ -252,15 +474,83 @@ class FrameStrip(QListWidget):
         except (UnicodeDecodeError, ValueError):
             event.ignore()
             return
-        if not 0 <= source < self.count():
+        if source != self._active_source or not 0 <= source < self.count():
             event.ignore()
             return
-        target = self._frame_at(event.position().toPoint())
-        if target < 0:
-            target = self.count() - 1
-        if source != target:
-            self.editor.move_frame_to(source, target)
+        self._update_target(event.position().toPoint())
+        destination = self._drop_target
+        if destination is None:
+            event.ignore()
+            return
+        # Domain operation happens exactly once, after the final target is known.
+        start = event.position().toPoint() - self._drag_hotspot
+        self._pending_settle = (start, destination, self._drag_card)
+        if source != destination:
+            self.editor.move_frame_to(source, destination)
         event.acceptProposedAction()
+
+    def _cancel_settle(self):
+        if self._settle_animation is not None:
+            self._settle_animation.stop()
+            self._settle_animation.deleteLater()
+            self._settle_animation = None
+        if self._settle_overlay is not None:
+            self._settle_overlay.deleteLater()
+            self._settle_overlay = None
+        self._settle_row = -1
+        self._settle_progress = 1.0
+        self._pending_settle = None
+
+    def _animate_settle(self):
+        pending = self._pending_settle
+        self._pending_settle = None
+        if pending is None or self._drag_active:
+            return
+        start, destination, pixmap = pending
+        if (pixmap is None or not 0 <= destination < self.count() or
+                not self.visualItemRect(self.item(destination)).intersects(self.viewport().rect())):
+            self._drag_card = None
+            return
+        self._cancel_settle()
+        end = self.visualItemRect(self.item(destination)).topLeft()
+        ghost = QLabel(self.viewport())
+        ghost.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        ghost.setPixmap(pixmap)
+        ghost.resize(pixmap.size())
+        ghost.move(start)
+        effect = QGraphicsOpacityEffect(ghost)
+        ghost.setGraphicsEffect(effect)
+        effect.setOpacity(0.84)
+        ghost.show()
+        ghost.raise_()
+        self._settle_overlay = ghost
+        self._settle_row = destination
+        self._settle_progress = 0.0
+
+        animation = QVariantAnimation(self)
+        animation.setDuration(180)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._settle_animation = animation
+
+        def step(value):
+            progress = float(value)
+            ghost.move(round(start.x() + (end.x() - start.x()) * progress),
+                       round(start.y() + (end.y() - start.y()) * progress))
+            effect.setOpacity(0.84 * (1.0 - progress))
+            self._settle_progress = progress
+            self.viewport().update(self.visualItemRect(self.item(destination)))
+
+        def finish():
+            if self._settle_animation is animation:
+                self._cancel_settle()
+                self._drag_card = None
+                self.viewport().update()
+
+        animation.valueChanged.connect(step)
+        animation.finished.connect(finish)
+        animation.start()
 
     def contextMenuEvent(self, event):
         language = getattr(self.editor, "ui_language", "en")
