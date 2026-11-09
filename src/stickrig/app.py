@@ -12,7 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
     QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -21,10 +21,14 @@ from PySide6.QtWidgets import (
     QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .model import (History, Project, RIG_OFFSETS, angle_for_drag, delete_frame, disk_project_changed,
-                    get_entity, get_layer, insert_frame, insert_blank_frame,
-                    joints_at, key_new_actor_visibility, load_project,
-                    make_shape, make_stickman, save_project, set_key, value_at)
+from .model import (History, Project, RIG_OFFSETS, SIMPLE_HIDDEN_LINKS,
+                    angle_for_drag, bend_for_drag, bezier_points, delete_frame,
+                    disk_project_changed, get_entity, get_layer, grid_settings,
+                    insert_frame, insert_blank_frame, joints_at,
+                    key_new_actor_visibility, load_project, make_shape,
+                    make_stickman, rig_offsets, save_project, segment_offset,
+                    set_key, set_segment_bend, set_segment_scale, snap_to_grid,
+                    stickman_strokes, value_at)
 from .render import export_mp4, render_image, visible_entities
 from .frames_ui import FrameStrip
 from .model import move_frame, set_frame_hidden, visible_frame_indices
@@ -103,9 +107,7 @@ class Canvas(QGraphicsView):
         return p.x(), p.y()
 
     def snap(self, point: tuple[float, float]) -> tuple[float, float]:
-        if self.editor.snap_check.isChecked():
-            return tuple(round(v / 10) * 10.0 for v in point)
-        return point
+        return snap_to_grid(point, grid_settings(self.editor.project))
 
     def frame_camera(self) -> None:
         project = self.editor.project
@@ -190,10 +192,13 @@ class Canvas(QGraphicsView):
                 kind not in ("stickman", "line", "rectangle", "circle")):
             return
         x, y = self._hover_position
+        grid = grid_settings(self.editor.project)
         if kind == "stickman":
-            obj = make_stickman(x, y)
+            obj = make_stickman(x, y, frame_index=self.editor.frame,
+                                rig_unit=grid["spacing"])
         else:
-            end = [x + 90, y + (0 if kind == "line" else 60)]
+            unit = grid["spacing"]
+            end = [x + unit * 9, y + (0 if kind == "line" else unit * 6)]
             obj = make_shape(kind, [x, y], end)
         self._preview_collect = True
         try:
@@ -218,6 +223,21 @@ class Canvas(QGraphicsView):
         item.setZValue(z)
         return self._track_preview_item(item)
 
+    def _curve(self, start, end, bend, color, width, *, z=0, opacity=1.0):
+        if abs(bend) < 1e-8:
+            return self._line(start, end, color, width, z=z, opacity=opacity)
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        path = QPainterPath()
+        path.moveTo(*start)
+        path.quadTo((start[0] + end[0]) / 2 - dy * bend,
+                    (start[1] + end[1]) / 2 + dx * bend, *end)
+        pen = QPen(QColor(color), width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        item = self.graphics.addPath(path, pen)
+        item.setZValue(z)
+        item.setOpacity(opacity)
+        return self._track_preview_item(item)
+
     def _ellipse(self, box, color, width, fill=None, *, z=0, opacity=1.0):
         pen = QPen(QColor(color), width)
         brush = QBrush(QColor(fill)) if fill else QBrush(Qt.BrushStyle.NoBrush)
@@ -239,7 +259,8 @@ class Canvas(QGraphicsView):
         color = "#4a9fd4" if ghost else e["color"]
         width = e["stroke_width"]
         if kind == "line":
-            self._line(e["a"], e["b"], color, width, z=z, opacity=opacity)
+            self._curve(e["a"], e["b"], e.get("bend", 0.0), color, width,
+                        z=z, opacity=opacity)
         elif kind in ("rectangle", "circle"):
             a, b = e["a"], e["b"]
             box = (min(a[0], b[0]), min(a[1], b[1]),
@@ -250,15 +271,17 @@ class Canvas(QGraphicsView):
                 self._ellipse(box, color, width, z=z, opacity=opacity)
         elif kind == "stickman":
             points, _ = joints_at(self.editor.project, e, frame)
-            for joint, (parent, _) in RIG_OFFSETS.items():
-                if parent:
-                    self._line(points[parent], points[joint], color, width, z=z, opacity=opacity)
+            for _, start, end, bend in stickman_strokes(e, points):
+                self._curve(start, end, bend, color, width, z=z, opacity=opacity)
             x, y = points["head"]
-            self._ellipse((x - 15, y - 15, 30, 30), color, width,
-                          color if e.get("head_filled") else "white",
+            radius = 1.7 * e.get("rig_unit", 10) if e.get("rig_style") == "simple" else 15
+            self._ellipse((x - radius, y - radius, radius * 2, radius * 2),
+                          color, width, color if e.get("head_filled") else "white",
                           z=z, opacity=opacity)
             if self.editor.selected_id == e["id"] and not ghost and not self.editor.playing:
                 for joint, xy in points.items():
+                    if e.get("rig_style") == "simple" and joint in SIMPLE_HIDDEN_LINKS:
+                        continue
                     cx, cy = xy
                     self._ellipse((cx - 5, cy - 5, 10, 10),
                                   "#d97706" if joint == self.editor.selected_joint else "#2176b7",
@@ -273,14 +296,27 @@ class Canvas(QGraphicsView):
         x, y = cam["center"]
         left, top = x - width / 2, y - height / 2
         self._rect((left, top, width, height), "#3d485b", 2.0, "#ffffff", z=-200)
-        if self.editor.grid_check.isChecked():
-            grid = 50
-            start_x = math.floor(left / grid) * grid
-            start_y = math.floor(top / grid) * grid
-            for gx in range(start_x, math.ceil((left + width) / grid) * grid + 1, grid):
-                self._line((gx, top), (gx, top + height), "#e8ecf2", 0.8, z=-190)
-            for gy in range(start_y, math.ceil((top + height) / grid) * grid + 1, grid):
-                self._line((left, gy), (left + width, gy), "#e8ecf2", 0.8, z=-190)
+        grid = grid_settings(project)
+        if grid["enabled"] and grid["visible"]:
+            # Coordinates always use world pixels. Reduce visual line density
+            # at low viewport zoom, without changing the true snap spacing.
+            spacing = grid["spacing"]
+            level = max(1, math.ceil(6 / max(0.1, spacing * self.transform().m11())))
+            displayed = spacing * level
+            first_x = math.floor(left / displayed)
+            first_y = math.floor(top / displayed)
+            for index in range(first_x, math.ceil((left + width) / displayed) + 1):
+                gx = index * displayed
+                major = (index % 5 == 0)
+                self._line((gx, top), (gx, top + height),
+                           "#c5cfdd" if major else "#e6ebf2",
+                           1 if major else 0.65, z=-190)
+            for index in range(first_y, math.ceil((top + height) / displayed) + 1):
+                gy = index * displayed
+                major = (index % 5 == 0)
+                self._line((left, gy), (left + width, gy),
+                           "#c5cfdd" if major else "#e6ebf2",
+                           1 if major else 0.65, z=-190)
         if self.editor.onion_check.isChecked() and self.editor.frame > 0 and not self.editor.playing:
             for e in visible_entities(project, self.editor.frame - 1):
                 if e["kind"] == "stickman":
@@ -294,21 +330,28 @@ class Canvas(QGraphicsView):
                 self._render_entity(demo, self.editor.frame, z=60, opacity=0.5)
         self.update_placement_preview()
 
-    def _pick(self, point: tuple[float, float]):
+    def _pick(self, point: tuple[float, float], *, segment=False):
         threshold = 13 / max(self.transform().m11(), 0.05)
         for e in reversed(list(visible_entities(self.editor.project, self.editor.frame))):
             if get_layer(self.editor.project, e["layer_id"])["locked"]:
                 continue
             if e["kind"] == "stickman":
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
-                for joint, xy in reversed(list(points.items())):
-                    if math.dist(point, xy) < threshold:
-                        return e["id"], joint
-                for joint, (parent, _) in RIG_OFFSETS.items():
-                    if parent and _distance_segment(point, points[parent], points[joint]) < threshold:
-                        return e["id"], None
+                if not segment:
+                    for joint, xy in reversed(list(points.items())):
+                        if e.get("rig_style") == "simple" and joint in SIMPLE_HIDDEN_LINKS:
+                            continue
+                        if math.dist(point, xy) < threshold:
+                            return e["id"], joint
+                for joint, a, b, bend in stickman_strokes(e, points):
+                    samples = bezier_points(a, b, bend)
+                    if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
+                           for i in range(len(samples) - 1)):
+                        return e["id"], joint if segment else None
             elif e["kind"] == "line":
-                if _distance_segment(point, e["a"], e["b"]) < threshold:
+                samples = bezier_points(tuple(e["a"]), tuple(e["b"]), e.get("bend", 0))
+                if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
+                       for i in range(len(samples) - 1)):
                     return e["id"], None
             else:
                 a, b = e["a"], e["b"]
@@ -337,7 +380,9 @@ class Canvas(QGraphicsView):
             self.shape_end = point
             self.redraw()
             return
-        eid, joint = self._pick(point)
+        eid, joint = self._pick(
+            point, segment=bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+        )
         self.editor.select_entity(eid, joint)
         if eid:
             self.drag_id = eid
@@ -369,14 +414,33 @@ class Canvas(QGraphicsView):
         if self.drag_id is not None and self.drag_start is not None:
             e = get_entity(self.editor.project, self.drag_id)
             if e["kind"] == "stickman" and self.drag_joint and self.drag_joint != "pelvis":
-                angle = angle_for_drag(self.editor.project, e, self.editor.frame, self.drag_joint, point)
-                set_key(self.editor.project, self.drag_id,
-                        f"pose.{self.drag_joint}", self.editor.frame, angle)
+                joint = self.drag_joint
+                if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                    points, _ = joints_at(self.editor.project, e, self.editor.frame)
+                    parent = rig_offsets(e)[joint][0]
+                    if parent:
+                        set_segment_bend(e, joint,
+                                         bend_for_drag(points[parent], points[joint], point))
+                else:
+                    if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                        points, _ = joints_at(self.editor.project, e, self.editor.frame)
+                        parent = rig_offsets(e)[joint][0]
+                        if parent:
+                            base = math.hypot(*rig_offsets(e)[joint][1])
+                            if base > 0.001:
+                                unit = e.get("rig_unit", 10) / 10.0
+                                factor = math.dist(point, points[parent]) / (base * unit)
+                                set_segment_scale(e, joint, max(0.2, min(2.5, factor)))
+                    angle = angle_for_drag(self.editor.project, e, self.editor.frame, joint, point)
+                    set_key(self.editor.project, self.drag_id,
+                            f"pose.{joint}", self.editor.frame, angle)
             elif e["kind"] == "stickman":
                 assert self.drag_origin is not None
                 dx, dy = point[0] - self.drag_start[0], point[1] - self.drag_start[1]
                 set_key(self.editor.project, self.drag_id, "position", self.editor.frame,
                         [self.drag_origin[0] + dx, self.drag_origin[1] + dy])
+            elif e["kind"] == "line" and event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                e["bend"] = bend_for_drag(tuple(e["a"]), tuple(e["b"]), point)
             else:
                 before = next((entry for entry in self.drag_before["scenes"][0]["entities"]
                                if entry["id"] == self.drag_id), None)
@@ -403,7 +467,9 @@ class Canvas(QGraphicsView):
             start = self.shape_start
             self.shape_start = self.shape_end = None
             if math.dist(start, point) < 8:
-                point = (start[0] + 80, start[1] + (0 if self.editor.tool == "line" else 55))
+                step = grid_settings(self.editor.project)["spacing"]
+                point = (start[0] + step * 8,
+                         start[1] + (0 if self.editor.tool == "line" else step * 6))
             self.editor.add_shape(self.editor.tool, start, point)
             self.redraw()
             return
