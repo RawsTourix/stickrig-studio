@@ -15,16 +15,18 @@ from PySide6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
-    QDockWidget, QFileDialog, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
+    QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QProgressDialog, QPushButton, QSpinBox,
-    QStatusBar, QToolBar, QVBoxLayout, QWidget,
+    QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .model import (History, Project, RIG_OFFSETS, angle_for_drag, delete_frame, disk_project_changed,
                     get_entity, get_layer, insert_frame, joints_at, load_project,
                     make_shape, make_stickman, save_project, set_key, value_at)
 from .render import export_mp4, render_image, visible_entities
+from .frames_ui import FrameStrip
+from .model import move_frame, set_frame_hidden, visible_frame_indices
 
 
 def _distance_segment(point, a, b) -> float:
@@ -60,7 +62,40 @@ class Canvas(QGraphicsView):
         self.shape_end: tuple[float, float] | None = None
         self.panning = False
         self.pan_start: QPoint | None = None
+        self._pan_residual_x = 0.0
+        self._pan_residual_y = 0.0
+        self._hover_position = None
+        self._preview_items = []
+        self._preview_collect = False
+        self.zoom_hud = QFrame(self.viewport())
+        self.zoom_hud.setObjectName("viewportZoomHud")
+        self.zoom_hud.setStyleSheet(
+            "#viewportZoomHud { background: rgba(252,253,255,235); "
+            "border: 1px solid #a6b2c1; border-radius: 8px; }"
+        )
+        zoom_layout = QHBoxLayout(self.zoom_hud)
+        zoom_layout.setContentsMargins(6, 2, 6, 2)
+        zoom_layout.setSpacing(4)
+        smaller = QToolButton(self.zoom_hud)
+        smaller.setText("−")
+        smaller.clicked.connect(lambda: self.zoom_by(1 / 1.2))
+        zoom_layout.addWidget(smaller)
+        self.zoom_label = QLabel("100%", self.zoom_hud)
+        self.zoom_label.setMinimumWidth(55)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_layout.addWidget(self.zoom_label)
+        bigger = QToolButton(self.zoom_hud)
+        bigger.setText("+")
+        bigger.clicked.connect(lambda: self.zoom_by(1.2))
+        zoom_layout.addWidget(bigger)
+        fit = QToolButton(self.zoom_hud)
+        fit.setText("Fit")
+        fit.setToolTip("Fit camera in view")
+        fit.clicked.connect(self.frame_camera)
+        zoom_layout.addWidget(fit)
+        self.zoom_hud.adjustSize()
         self.redraw()
+        self.reposition_zoom_hud()
 
     def to_world(self, event) -> tuple[float, float]:
         p = self.mapToScene(event.position().toPoint())
@@ -79,25 +114,94 @@ class Canvas(QGraphicsView):
         self.fitInView(QRectF(x - width / 2 - 40, y - height / 2 - 40,
                               width + 80, height + 80),
                        Qt.AspectRatioMode.KeepAspectRatio)
+        self.update_zoom_label()
+
+    def update_zoom_label(self):
+        # Viewport zoom is separate from the project's camera zoom.
+        self.zoom_label.setText(f"{self.transform().m11() * 100:.0f}%")
+
+    def zoom_by(self, multiplier: float):
+        old = self.transform().m11()
+        if 0.05 <= old * multiplier <= 12:
+            self.scale(multiplier, multiplier)
+            self.update_zoom_label()
+
+    @staticmethod
+    def pan_sensitivity(view_scale: float) -> float:
+        """Gentle continuous sensitivity curve: precise when zoomed in."""
+        return max(0.4, min(3.2, 1 / math.sqrt(max(0.05, view_scale))))
+
+    def pan_pixels(self, dx, dy):
+        sensitivity = self.pan_sensitivity(self.transform().m11())
+        self._pan_residual_x += dx * sensitivity
+        self._pan_residual_y += dy * sensitivity
+        whole_x = math.trunc(self._pan_residual_x)
+        whole_y = math.trunc(self._pan_residual_y)
+        self._pan_residual_x -= whole_x
+        self._pan_residual_y -= whole_y
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - whole_x)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() - whole_y)
 
     def wheelEvent(self, event):
-        """Unmodified touchpad swipe/wheel pans; Ctrl+wheel zooms about the pointer."""
+        """Swipe/wheel pans with zoom-adaptive sensitivity; Ctrl+wheel zooms."""
         pixels, angles = event.pixelDelta(), event.angleDelta()
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             dy = pixels.y() if pixels.y() else angles.y() / 120 * 56
             if dy:
-                factor = math.exp(max(-4.0, min(4.0, dy / 280)))
-                current = self.transform().m11()
-                if 0.05 < current * factor < 12:
-                    self.scale(factor, factor)
+                self.zoom_by(math.exp(max(-4.0, min(4.0, dy / 280))))
         else:
             dx = pixels.x() if pixels.x() else angles.x() / 120 * 56
             dy = pixels.y() if pixels.y() else angles.y() / 120 * 56
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and not dx:
                 dx, dy = dy, 0
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - round(dx))
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - round(dy))
+            self.pan_pixels(dx, dy)
         event.accept()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "zoom_hud"):
+            self.reposition_zoom_hud()
+
+    def reposition_zoom_hud(self):
+        self.zoom_hud.adjustSize()
+        self.zoom_hud.move(max(6, self.viewport().width() - self.zoom_hud.width() - 12),
+                           max(6, self.viewport().height() - self.zoom_hud.height() - 12))
+        self.zoom_hud.raise_()
+
+    def _track_preview_item(self, item):
+        if self._preview_collect:
+            self._preview_items.append(item)
+        return item
+
+    def clear_placement_preview(self):
+        for item in self._preview_items:
+            if item.scene() is self.graphics:
+                self.graphics.removeItem(item)
+        self._preview_items.clear()
+
+    def update_placement_preview(self):
+        self.clear_placement_preview()
+        kind = self.editor.tool
+        if (self._hover_position is None or self.editor.playing or self.panning or
+                self.shape_start is not None or self.drag_id is not None or
+                kind not in ("stickman", "line", "rectangle", "circle")):
+            return
+        x, y = self._hover_position
+        if kind == "stickman":
+            obj = make_stickman(x, y)
+        else:
+            end = [x + 90, y + (0 if kind == "line" else 60)]
+            obj = make_shape(kind, [x, y], end)
+        self._preview_collect = True
+        try:
+            self._render_entity(obj, self.editor.frame, z=95, opacity=0.40, ghost=True)
+        finally:
+            self._preview_collect = False
+
+    def leaveEvent(self, event):
+        self._hover_position = None
+        self.clear_placement_preview()
+        super().leaveEvent(event)
 
     def _line(self, a, b, color, width, *, z=0, opacity=1.0, dash=False):
         pen = QPen(QColor(color), width)
@@ -108,7 +212,7 @@ class Canvas(QGraphicsView):
         item = self.graphics.addLine(a[0], a[1], b[0], b[1], pen)
         item.setOpacity(opacity)
         item.setZValue(z)
-        return item
+        return self._track_preview_item(item)
 
     def _ellipse(self, box, color, width, fill=None, *, z=0, opacity=1.0):
         pen = QPen(QColor(color), width)
@@ -116,7 +220,7 @@ class Canvas(QGraphicsView):
         item = self.graphics.addEllipse(QRectF(*box), pen, brush)
         item.setZValue(z)
         item.setOpacity(opacity)
-        return item
+        return self._track_preview_item(item)
 
     def _rect(self, box, color, width, fill=None, *, z=0, opacity=1.0):
         pen = QPen(QColor(color), width)
@@ -124,7 +228,7 @@ class Canvas(QGraphicsView):
         item = self.graphics.addRect(QRectF(*box), pen, brush)
         item.setZValue(z)
         item.setOpacity(opacity)
-        return item
+        return self._track_preview_item(item)
 
     def _render_entity(self, e, frame: int, *, z=0, opacity=1.0, ghost=False):
         kind = e["kind"]
@@ -158,6 +262,7 @@ class Canvas(QGraphicsView):
 
     def redraw(self) -> None:
         self.graphics.clear()
+        self._preview_items.clear()
         project = self.editor.project
         cam = project.scene["camera"]
         width, height = project.width / cam["zoom"], project.height / cam["zoom"]
@@ -183,6 +288,7 @@ class Canvas(QGraphicsView):
             if kind in ("line", "rectangle", "circle"):
                 demo = make_shape(kind, list(self.shape_start), list(self.shape_end))
                 self._render_entity(demo, self.editor.frame, z=60, opacity=0.5)
+        self.update_placement_preview()
 
     def _pick(self, point: tuple[float, float]):
         threshold = 13 / max(self.transform().m11(), 0.05)
@@ -248,8 +354,7 @@ class Canvas(QGraphicsView):
         if self.panning and self.pan_start is not None:
             current = event.position().toPoint()
             delta = current - self.pan_start
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            self.pan_pixels(delta.x(), delta.y())
             self.pan_start = current
             return
         if self.shape_start is not None:
@@ -276,6 +381,8 @@ class Canvas(QGraphicsView):
                 e["b"] = [before["b"][0] + dx, before["b"][1] + dy]
             self.redraw()
             return
+        self._hover_position = point
+        self.update_placement_preview()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
