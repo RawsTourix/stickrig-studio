@@ -6,7 +6,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -16,9 +16,15 @@ from stickrig.model import (
 )
 
 
+_QT_APP = None  # Keep QApplication stable across all tests in this module.
+
+
 def prepare_window():
     from stickrig.app import MainWindow
-    app = QApplication.instance() or QApplication([])
+    global _QT_APP
+    if _QT_APP is None:
+        _QT_APP = QApplication.instance() or QApplication([])
+    app = _QT_APP
     window = MainWindow()
     window.resize(1250, 850)
     window.show()
@@ -32,6 +38,9 @@ def close_window(window):
     window.capture_workspace(force=True)
     window.saved_snapshot = window.project.to_dict()
     window.close()
+    window.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    QApplication.processEvents()
 
 
 def drain_thumbnails(app, window, rounds=30):
