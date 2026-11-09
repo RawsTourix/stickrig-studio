@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.3 prototype (navigation, frame management and localization groundwork).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.4 prototype (animated frame reordering, dockable workspace, and AI-friendly editing).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -44,12 +44,21 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | Two-finger touchpad swipe / wheel / middle mouse | Pan with zoom-dependent sensitivity: zoomed-in movement is more precise, zoomed-out movement travels faster. **Ctrl+wheel/scroll** zooms around cursor |
 | `Grid`, `Snap (10)` | Toggle viewport grid and 10-unit position snapping |
 | Inspector, Layers, Camera | Independent dock panels. Drag title bars, resize, tabify, float or hide; reopen from **View** menu |
-| **Frames** sidebar | Right-click empty area to add a frame; right-click a frame for actions; quick buttons to hide from playback, duplicate or delete; drag by the **≡** handle to reorder |\n| **Elements** panel | Select an element to see a translucent preview under the cursor before placing it in the scene |\n| **Playback strip** | Compact independent toolbar at the bottom of the window: frame navigation, play/pause and FPS |\n| **Zoom controls** | Lower-right overlay on the canvas shows current **viewport zoom percentage** with −, +, Fit; it is independent of camera zoom |\n| **View → Reset workspace** | Restore default panel layout; the current layout is stored inside the project JSON when saved |\n| `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save (including panel layout), undo, redo |
+| **Frames** sidebar | Right-click for actions; eye/duplicate/trash quick buttons at the bottom of each card. Drag from the **right dotted grip**: a translucent card follows the pointer, nearby frames slide aside, a purple insertion line marks the destination, and holding near an edge auto-scrolls. |
+| **Elements** panel | Select an element to see a translucent preview under the cursor before placing it in the scene |
+| **Playback strip** | Compact independent toolbar at the bottom of the window: frame navigation, play/pause and FPS |
+| **Zoom controls** | Lower-right overlay on the canvas shows current **viewport zoom percentage** with −, +, Fit; it is independent of camera zoom |
+| **View → Reset workspace** | Restore default panel layout; the current layout is stored inside the project JSON when saved |
+| `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save (including panel layout), undo, redo |
 | `←`, `→`, `Space`, `Ctrl+D` | Previous/next frame, play/pause, insert duplicate hold frame |
 
-**Performance:** only visible frame thumbnails are rasterized directly at 128-pixel width. A lightweight item delegate paints quick buttons without creating separate widgets per frame. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.\n\n**Frame visibility:** hidden frames remain editable and in the Frames panel, but are excluded from playback and MP4 export. At least one frame must remain visible; hiding and moving frames are undoable. Frame indices in JSON/CLI are zero-based, while the GUI labels frames from 1.
+**Performance:** only visible frame thumbnails are rasterized directly at 128-pixel width. A lightweight item delegate paints quick buttons without creating separate widgets per frame. During reordering, only visible rows participate in short Qt animations. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.
 
-**Localization:** an English/Russian message catalog is in `src/stickrig/i18n.py` as the foundation for a later full language switch. Most of the editor is still English.\n\nOther capabilities: create/open/save structured `.stickrig.json`, silent MP4 export, PNG export, single-scene hold-keyframe animation and multiple independent characters.
+**Frame visibility:** hidden frames remain editable and in the Frames panel, but are excluded from playback and MP4 export. At least one frame must remain visible; hiding and moving frames are undoable. Frame indices in JSON/CLI are zero-based, while the GUI labels frames from 1.
+
+**Localization:** an English/Russian message catalog is in `src/stickrig/i18n.py` as the foundation for a later full language switch. Most of the editor is still English.
+
+Other capabilities: create/open/save structured `.stickrig.json`, silent MP4 export, PNG export, single-scene hold-keyframe animation and multiple independent characters.
 
 **Limitations:** only one scene; one basic rig; hold frames only (no interpolation/IK); static camera; shapes are not keyframable; no weapon asset editor, audio montage or live MCP server yet. These are documented future milestones, not implemented features. Layer visibility currently applies to both editor and export. Animation remains fully offline.
 
@@ -85,7 +94,9 @@ src/stickrig/model.py         # Versioned JSON model, rig math, frame edits and 
 src/stickrig/render.py        # Deterministic Pillow preview/FFmpeg video export
 src/stickrig/automation.py    # Validated atomic AI-friendly operations
 src/stickrig/cli.py           # Headless CLI for inspect/apply/render/export
-src/stickrig/app.py           # PySide6 GUI, navigation, dockable panels and pose interaction\nsrc/stickrig/frames_ui.py     # Frame strip actions, context menu and drag handling\nsrc/stickrig/i18n.py          # Initial EN/RU translation catalog
+src/stickrig/app.py           # PySide6 GUI, navigation, dockable panels and pose interaction
+src/stickrig/frames_ui.py     # Frame strip actions, context menu and drag handling
+src/stickrig/i18n.py          # Initial EN/RU translation catalog
 tests/                        # Core, rendering, AI patch and Qt smoke tests
 examples/                     # Example project and an AI-style scene patch
 docs/                         # Concept and development documentation
@@ -113,10 +124,14 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [08 — Roadmap](docs/08-roadmap.md) | Milestones and next steps |
 | [09 — Decisions](docs/09-decisions.md) | Assumptions and open questions |
 | [10 — Acceptance scenario](docs/10-acceptance-scenario.md) | Training-hall animation as a test |
-| [11 — Prototype v0.1](docs/11-prototype-v0.1.md) | Initial implementation and constraints |\n| [12 — Workspace feedback v0.2](docs/12-workspace-feedback-v0.2.md) | Layout, trackpad gestures, frame thumbnails and testing |\n| [13 — Interaction feedback v0.3](docs/13-interaction-feedback-v0.3.md) | Adaptive navigation, frame actions and localization groundwork |
+| [11 — Prototype v0.1](docs/11-prototype-v0.1.md) | Initial implementation and constraints |
+| [12 — Workspace feedback v0.2](docs/12-workspace-feedback-v0.2.md) | Layout, trackpad gestures, frame thumbnails and testing |
+| [13 — Interaction feedback v0.3](docs/13-interaction-feedback-v0.3.md) | Adaptive navigation, frame actions and localization groundwork |
+| [14 — GraphicsGale workspace](docs/14-graphicsgale-workspace-v0.4.md) | Dockable editor, blank frame behavior and UI layout |
+| [15 — Animated frame drag](docs/15-animated-frames-drag-v0.4.md) | Drag ghost, moving neighbors, insertion marker, auto-scroll and snap |
 
 ## Licensing and attribution
 
 No software license has yet been selected by the repository owner. References to historical animations and editors are used only to explain the product concept; no third-party video, music or protected assets are included.
 
-See [v0.4 layout and blank frames](docs/14-graphicsgale-workspace-v0.4.md) for the new dock behavior and visibility semantics.
+See [v0.4 workspace](docs/14-graphicsgale-workspace-v0.4.md) and [animated frame drag](docs/15-animated-frames-drag-v0.4.md) for details.
