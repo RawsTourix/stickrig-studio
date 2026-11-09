@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.5.2 prototype (long-frame thumbnails, reliable current-frame focus and precise joint posing).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.5.3 prototype (double-click joint for instant original-length reset).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -29,13 +29,13 @@ Alternatively run `stickrig` or `stickrig-cli` after installation. Video export 
 
 For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-## Controls in v0.5.2
+## Controls in v0.5.3
 
 | Tool | Action |
 | --- | --- |
 | `+ Stickman` | Click to place a minimalist stickman (one torso, bent arms and legs); dimensions start from the scene's grid step |
 | `Esc` | Immediately exit element placement and return to **Select / Move** |
-| `Select / Move` | Click an object to select it; click empty space to deselect. Drag a joint to pose; **Shift+drag joint** changes apparent limb length without grid rounding (magnet near 100%); **Alt+drag bone** bends it; Inspector can reset length to 100% |
+| `Select / Move` | Click an object to select it; click empty space to deselect. Drag a joint to pose; **Shift+drag joint** changes apparent limb length without grid rounding (magnet near 100%); **double-click a joint** restores its default length; **Alt+drag bone** bends it |
 | `Line`, `Rectangle`, `Ellipse` | Draw primitives; **drag line endpoints** to shorten/rotate props (e.g. staffs), **Alt+drag line** or Inspector to bend a line |
 | `+` under Frames | Insert a **completely empty** frame after the current one; do not inherit objects or a background |
 | Duplicate frame (`Ctrl+D` or copy button) | Create an **independent editable copy** of the current frame's stickmen and shapes |
@@ -141,6 +141,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [18 — Minimal stickman and grid](docs/18-simple-rig-grid-escape-v0.5.md) | Esc, minimal silhouette, bend/shorten bones, and adjustable vector grid |
 | [19 — Workspace fixes](docs/19-window-grid-selection-v0.5.1.md) | Remember maximized window, responsive scene-wide grid and precise selection |
 | [20 — Long animation workflow](docs/20-long-frames-and-joints-v0.5.2.md) | Reliable thumbnails and frame focus, nearest joint picking and resettable limb length |
+| [21 — Double-click reset](docs/21-double-click-rest-length-v0.5.3.md) | Restore a limb's original length directly from its joint handle |
 
 ## Licensing and attribution
 
