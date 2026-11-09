@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QMimeData, QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QDrag, QPainter, QPen
+from .i18n import tr
+
 from PySide6.QtWidgets import (
     QApplication, QListWidget, QMenu, QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -153,29 +155,31 @@ class FrameStrip(QListWidget):
         event.acceptProposedAction()
 
     def contextMenuEvent(self, event):
+        language = getattr(self.editor, "ui_language", "en")
+        label = lambda key: tr("frames." + key, language)
         row = self._frame_at(event.pos())
         menu = QMenu(self)
         if row < 0:
-            menu.addAction("New frame at end", self.editor.append_frame)
+            menu.addAction(label("new_at_end"), self.editor.append_frame)
             menu.addSeparator()
-            menu.addAction("Duplicate current frame", self.editor.add_frame)
+            menu.addAction(label("duplicate_current"), self.editor.add_frame)
         else:
             if self.currentRow() != row:
                 self.setCurrentRow(row)
             hidden = row in self.editor.project.scene.get("hidden_frames", [])
-            menu.addAction("Show in playback" if hidden else "Hide from playback",
+            menu.addAction(label("show") if hidden else label("hide"),
                            lambda: self.editor.toggle_frame_visibility(row))
-            menu.addAction("Duplicate frame", lambda: self.editor.duplicate_frame_at(row))
-            menu.addAction("Insert frame after", lambda: self.editor.insert_frame_after(row))
+            menu.addAction(label("duplicate"), lambda: self.editor.duplicate_frame_at(row))
+            menu.addAction(label("insert_after"), lambda: self.editor.insert_frame_after(row))
             menu.addSeparator()
-            above = menu.addAction("Move frame up",
+            above = menu.addAction(label("move_up"),
                                    lambda: self.editor.move_frame_to(row, row - 1))
             above.setEnabled(row > 0)
-            below = menu.addAction("Move frame down",
+            below = menu.addAction(label("move_down"),
                                    lambda: self.editor.move_frame_to(row, row + 1))
             below.setEnabled(row + 1 < self.count())
             menu.addSeparator()
-            remove = menu.addAction("Delete frame",
+            remove = menu.addAction(label("delete"),
                                     lambda: self.editor.delete_frame_at(row))
             remove.setEnabled(self.count() > 1)
         menu.exec(event.globalPos())
