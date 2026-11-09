@@ -261,6 +261,11 @@ class Canvas(QGraphicsView):
         if kind == "line":
             self._curve(e["a"], e["b"], e.get("bend", 0.0), color, width,
                         z=z, opacity=opacity)
+            if self.editor.selected_id == e["id"] and not ghost and not self.editor.playing:
+                for name in ("a", "b"):
+                    px, py = e[name]
+                    self._ellipse((px - 4.5, py - 4.5, 9, 9), "#2176b7", 1.4,
+                                  "#ffffff", z=50)
         elif kind in ("rectangle", "circle"):
             a, b = e["a"], e["b"]
             box = (min(a[0], b[0]), min(a[1], b[1]),
@@ -365,6 +370,10 @@ class Canvas(QGraphicsView):
                            for i in range(len(samples) - 1)):
                         return e["id"], joint if segment else None
             elif e["kind"] == "line":
+                if not segment:
+                    for endpoint in ("a", "b"):
+                        if math.dist(point, e[endpoint]) < threshold:
+                            return e["id"], endpoint
                 samples = bezier_points(tuple(e["a"]), tuple(e["b"]), e.get("bend", 0))
                 if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
                        for i in range(len(samples) - 1)):
@@ -455,6 +464,8 @@ class Canvas(QGraphicsView):
                 dx, dy = point[0] - self.drag_start[0], point[1] - self.drag_start[1]
                 set_key(self.editor.project, self.drag_id, "position", self.editor.frame,
                         [self.drag_origin[0] + dx, self.drag_origin[1] + dy])
+            elif e["kind"] == "line" and self.drag_joint in ("a", "b"):
+                e[self.drag_joint] = [point[0], point[1]]
             elif e["kind"] == "line" and event.modifiers() & Qt.KeyboardModifier.AltModifier:
                 e["bend"] = bend_for_drag(tuple(e["a"]), tuple(e["b"]), point)
             else:
