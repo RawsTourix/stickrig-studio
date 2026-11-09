@@ -58,6 +58,7 @@ def test_revision_guard():
 def test_patch_controls_pose():
     p = Project()
     p.scene["entities"].append(make_stickman(300, 400, entity_id="hero"))
+    p.scene["duration_frames"] = 4
     edited, _ = apply_patch(p, {"expected_revision": 0, "operations": [
         {"op": "set_joint_angle", "id": "hero", "joint": "elbow_l", "angle_deg": -42, "frame": 2},
         {"op": "set_position", "id": "hero", "position": [400, 400], "frame": 3},
@@ -71,6 +72,7 @@ def test_delete_entity_also_deletes_tracks():
     p = Project()
     p.scene["entities"].append(make_stickman(300, 400, entity_id="hero"))
     from stickrig.model import set_key
+    p.scene["duration_frames"] = 2
     set_key(p, "hero", "pose.elbow_l", 1, 42)
     updated, _ = apply_patch(p, {"expected_revision": 0, "operations": [
         {"op": "delete_entity", "id": "hero"},
@@ -116,6 +118,7 @@ def test_ai_cannot_edit_locked_layer():
 def test_cli_inspect_exposes_keyframes_for_ai(tmp_path, capsys):
     from stickrig.model import set_key
     p = Project()
+    p.scene["duration_frames"] = 4
     p.scene["entities"].append(make_stickman(20, 20, entity_id="hero"))
     set_key(p, "hero", "pose.elbow_r", 3, 30)
     path = tmp_path / "inspect.json"
