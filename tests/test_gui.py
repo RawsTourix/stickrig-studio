@@ -33,6 +33,7 @@ def test_window_project_edit_save_and_reopen(tmp_path):
         assert len(w.project.scene["entities"]) == 1
         assert w.project.duration == 2
     finally:
+        w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
 
@@ -61,6 +62,7 @@ def test_frame_sidebar_and_project_layout_roundtrip(tmp_path):
         w.load_file(path)
         assert w.frames_list.count() == 2
     finally:
+        w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
 
@@ -101,6 +103,7 @@ def test_preview_strip_and_frame_actions():
         w.delete_frame_at(3)
         assert w.project.duration == 3
     finally:
+        w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
 
@@ -120,5 +123,6 @@ def test_frame_thumbnail_generation_is_lazy():
         assert w.frames_list.count() == 121
         assert len(w._thumb_cache) <= 15
     finally:
+        w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
