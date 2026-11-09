@@ -14,7 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QSettings
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
+    QAbstractItemView, QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
     QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSpinBox,
@@ -27,7 +27,8 @@ from .model import (History, Project, RIG_OFFSETS, SIMPLE_HIDDEN_LINKS,
                     insert_frame, insert_blank_frame, joints_at,
                     key_new_actor_visibility, load_project, make_shape,
                     make_stickman, rig_offsets, save_project, segment_offset,
-                    set_key, set_segment_bend, set_segment_scale, snap_to_grid,
+                    set_key, set_segment_bend, set_segment_scale,
+                    segment_scale_for_drag, snap_to_grid,
                     stickman_strokes, value_at)
 from .render import export_mp4, render_image, visible_entities
 from .frames_ui import FrameStrip
@@ -390,39 +391,70 @@ class Canvas(QGraphicsView):
         self.update_placement_preview()
 
     def _pick(self, point: tuple[float, float], *, segment=False):
-        threshold = 13 / max(self.transform().m11(), 0.05)
-        for e in reversed(list(visible_entities(self.editor.project, self.editor.frame))):
+        """Choose the nearest handle, not the first joint in rig order.
+
+        At small viewport zoom the hit radii of knees/ankles can overlap.
+        Prefer the actually closest joint; repeated clicks cycle only through
+        near-identical locations when their screen-space positions coincide.
+        """
+        scale = max(0.05, abs(self.transform().m11()))
+        radius = 12.0 / scale
+        near_equal_radius = 2.0 / scale
+        handles = []
+        bodies = []
+        entities = reversed(list(visible_entities(self.editor.project, self.editor.frame)))
+        for order, e in enumerate(entities):
             if get_layer(self.editor.project, e["layer_id"])["locked"]:
                 continue
+            ident = e["id"]
             if e["kind"] == "stickman":
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
                 if not segment:
-                    for joint, xy in reversed(list(points.items())):
+                    for joint, xy in points.items():
                         if (e.get("rig_style") == "simple" and
                                 joint in SIMPLE_HIDDEN_LINKS and joint != "head"):
                             continue
-                        if math.dist(point, xy) < threshold:
-                            return e["id"], joint
+                        distance = math.dist(point, xy)
+                        if distance <= radius:
+                            handles.append((distance, order, ident, joint))
                 for joint, a, b, bend in stickman_strokes(e, points):
                     samples = bezier_points(a, b, bend)
-                    if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
-                           for i in range(len(samples) - 1)):
-                        return e["id"], joint if segment else None
+                    distance = min(_distance_segment(point, samples[i], samples[i + 1])
+                                   for i in range(len(samples) - 1))
+                    if distance <= radius:
+                        bodies.append((distance, order, ident,
+                                       joint if segment else None))
             elif e["kind"] == "line":
                 if not segment:
                     for endpoint in ("a", "b"):
-                        if math.dist(point, e[endpoint]) < threshold:
-                            return e["id"], endpoint
+                        distance = math.dist(point, e[endpoint])
+                        if distance <= radius:
+                            handles.append((distance, order, ident, endpoint))
                 samples = bezier_points(tuple(e["a"]), tuple(e["b"]), e.get("bend", 0))
-                if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
-                       for i in range(len(samples) - 1)):
-                    return e["id"], None
+                distance = min(_distance_segment(point, samples[i], samples[i + 1])
+                               for i in range(len(samples) - 1))
+                if distance <= radius:
+                    bodies.append((distance, order, ident, None))
             else:
                 a, b = e["a"], e["b"]
                 x1, x2 = sorted((a[0], b[0]))
                 y1, y2 = sorted((a[1], b[1]))
-                if x1 - threshold <= point[0] <= x2 + threshold and y1 - threshold <= point[1] <= y2 + threshold:
-                    return e["id"], None
+                if (x1 - radius <= point[0] <= x2 + radius and
+                        y1 - radius <= point[1] <= y2 + radius):
+                    bodies.append((radius, order, ident, None))
+        if handles:
+            handles.sort(key=lambda hit: (hit[0], hit[1]))
+            nearest = handles[0][0]
+            similar = [hit for hit in handles if hit[0] <= nearest + near_equal_radius]
+            current = (self.editor.selected_id, self.editor.selected_joint)
+            if len(similar) > 1 and (similar[0][2], similar[0][3]) == current:
+                for hit in similar[1:]:
+                    if (hit[2], hit[3]) != current:
+                        return hit[2], hit[3]
+            return handles[0][2], handles[0][3]
+        if bodies:
+            bodies.sort(key=lambda hit: (hit[0], hit[1]))
+            return bodies[0][2], bodies[0][3]
         return None, None
 
     def mousePressEvent(self, event):
@@ -464,8 +496,9 @@ class Canvas(QGraphicsView):
         event.accept()
 
     def mouseMoveEvent(self, event):
-        point = self.snap(self.to_world(event))
-        self.editor.update_canvas_coordinates(point)
+        raw_point = self.to_world(event)
+        point = self.snap(raw_point)
+        self.editor.update_canvas_coordinates(raw_point)
         if self.panning and self.pan_start is not None:
             current = event.position().toPoint()
             delta = current - self.pan_start
@@ -487,16 +520,17 @@ class Canvas(QGraphicsView):
                         set_segment_bend(e, joint,
                                          bend_for_drag(points[parent], points[joint], point))
                 else:
-                    if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    resizing = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                    if resizing:
                         points, _ = joints_at(self.editor.project, e, self.editor.frame)
                         parent = rig_offsets(e)[joint][0]
-                        if parent:
-                            base = math.hypot(*rig_offsets(e)[joint][1])
-                            if base > 0.001:
-                                unit = e.get("rig_unit", 10) / 10.0
-                                factor = math.dist(point, points[parent]) / (base * unit)
-                                set_segment_scale(e, joint, max(0.2, min(2.5, factor)))
-                    angle = angle_for_drag(self.editor.project, e, self.editor.frame, joint, point)
+                        if parent and math.hypot(*rig_offsets(e)[joint][1]) > 1e-6:
+                            set_segment_scale(e, joint, segment_scale_for_drag(
+                                e, joint, points[parent], raw_point))
+                    # Shift length editing intentionally bypasses grid snapping.
+                    # Regular joint posing continues to respect Snap.
+                    target = raw_point if resizing else point
+                    angle = angle_for_drag(self.editor.project, e, self.editor.frame, joint, target)
                     set_key(self.editor.project, self.drag_id,
                             f"pose.{joint}", self.editor.frame, angle)
             elif e["kind"] == "stickman":
@@ -575,6 +609,8 @@ class MainWindow(QMainWindow):
         self._thumb_epoch = 0
         self._thumb_pending = False
         self._thumb_cache = OrderedDict()
+        self._frame_focus_request = 0
+        self._focused_frame_row = None
         self._cursor_world = None
         self._building = True
         self.build_ui()
@@ -694,6 +730,10 @@ class MainWindow(QMainWindow):
         self.segment_length.setSuffix(" %")
         self.segment_length.valueChanged.connect(self.change_segment_length)
         segment_layout.addWidget(self.segment_length)
+        self.reset_length_button = QPushButton("Reset length to 100%", self.segment_box)
+        self.reset_length_button.setToolTip("Restore the selected limb's default length")
+        self.reset_length_button.clicked.connect(self.reset_selected_length)
+        segment_layout.addWidget(self.reset_length_button)
         segment_layout.addWidget(QLabel("Curve / bend"))
         self.segment_bend_spin = QDoubleSpinBox(self.segment_box)
         self.segment_bend_spin.setRange(-100, 100)
@@ -751,6 +791,7 @@ class MainWindow(QMainWindow):
         self.frames_list.verticalScrollBar().valueChanged.connect(
             lambda _: self.schedule_thumbnails()
         )
+        self.frames_list.viewport().installEventFilter(self)
         frame_layout.addWidget(self.frames_list, 1)
         # A single plus action creates a blank animation frame. Duplication is
         # available on the frame's quick-action buttons and context menu.
@@ -906,6 +947,10 @@ class MainWindow(QMainWindow):
         return QIcon(pix)
 
     def eventFilter(self, watched, event):
+        if (hasattr(self, "frames_list") and
+                watched is self.frames_list.viewport() and
+                event.type() == QEvent.Type.Resize):
+            QTimer.singleShot(0, self.schedule_thumbnails)
         if (watched in self._docks and
                 event.type() in (QEvent.Type.Move, QEvent.Type.Resize,
                                  QEvent.Type.Show, QEvent.Type.Hide)):
@@ -954,15 +999,69 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{'* ' if self.is_dirty else ''}{name} — StickRig Studio")
 
     def visible_frame_rows(self):
-        count = self.frames_list.count()
+        """Find viewport rows without depending on a hit in the item margin.
+
+        indexAt(5, 5) can return an invalid index when the first pixel falls
+        in a frame-card gap. Its previous fallback silently rendered rows 0..9
+        even if the viewport had scrolled to frames 11+. Rect-based binary
+        search works for offscreen QListWidget items as well as visible ones.
+        """
+        strip = self.frames_list
+        count = strip.count()
         if not count:
-            return ()
-        viewport = self.frames_list.viewport()
-        first = self.frames_list.indexAt(QPoint(5, 5))
-        last = self.frames_list.indexAt(QPoint(5, max(5, viewport.height() - 5)))
-        start = first.row() if first.isValid() else 0
-        stop = last.row() if last.isValid() else min(count - 1, start + 8)
-        return range(max(0, start - 1), min(count, max(start, stop) + 2))
+            return range(0)
+        viewport_height = strip.viewport().height()
+        if viewport_height <= 1:
+            return range(0, min(count, 3))
+
+        def bounds(row):
+            return strip.visualItemRect(strip.item(row))
+
+        lo, hi = 0, count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if bounds(mid).bottom() < 0:
+                lo = mid + 1
+            else:
+                hi = mid
+        first = lo
+
+        lo, hi = first, count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if bounds(mid).top() <= viewport_height:
+                lo = mid + 1
+            else:
+                hi = mid
+        last_exclusive = lo
+        return range(max(0, min(first, count) - 1),
+                     min(count, max(first + 1, last_exclusive) + 1))
+
+    def keep_active_frame_visible(self):
+        """Reveal the selected frame after Qt finishes relaying out the list."""
+        row = self.frame
+        strip = self.frames_list
+        if not (0 <= row < strip.count()):
+            return
+        item = strip.item(row)
+        rect = strip.visualItemRect(item)
+        viewport = strip.viewport().rect()
+        if rect.top() < viewport.top() or rect.bottom() > viewport.bottom():
+            strip.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+        self.schedule_thumbnails()
+
+    def request_active_frame_focus(self):
+        self._frame_focus_request += 1
+        request = self._frame_focus_request
+        # Reveal immediately when possible, and again after Qt recomputes
+        # item geometry following insertion/duplicate/deletion of a frame.
+        self.keep_active_frame_visible()
+
+        def deferred():
+            if request == self._frame_focus_request:
+                self.keep_active_frame_visible()
+
+        QTimer.singleShot(0, deferred)
 
     def schedule_thumbnails(self):
         if self.playing or self._thumb_pending or not self.frames_list.count():
@@ -977,8 +1076,10 @@ class MainWindow(QMainWindow):
         visible = set(self.visible_frame_rows())
         for old in list(self._thumb_cache):
             if old not in visible:
-                self.frames_list.item(old).setIcon(QIcon())
-                self.frames_list.item(old).setData(Qt.ItemDataRole.UserRole + 1, -1)
+                old_item = self.frames_list.item(old)
+                if old_item is not None:
+                    old_item.setIcon(QIcon())
+                    old_item.setData(Qt.ItemDataRole.UserRole + 1, -1)
                 del self._thumb_cache[old]
         for row in visible:
             item = self.frames_list.item(row)
@@ -998,7 +1099,8 @@ class MainWindow(QMainWindow):
             break
 
     def refresh_frames(self, *, content_changed):
-        if self.frames_list.count() != self.project.duration:
+        recreated = self.frames_list.count() != self.project.duration
+        if recreated:
             self.frames_list.blockSignals(True)
             self.frames_list.clear()
             self._thumb_cache.clear()
@@ -1032,6 +1134,10 @@ class MainWindow(QMainWindow):
             self.frames_list.blockSignals(True)
             self.frames_list.setCurrentRow(self.frame)
             self.frames_list.blockSignals(False)
+        changed_selection = self._focused_frame_row != self.frame
+        if recreated or changed_selection:
+            self._focused_frame_row = self.frame
+            self.request_active_frame_focus()
         if not self.playing:
             self.schedule_thumbnails()
 
@@ -1241,6 +1347,18 @@ class MainWindow(QMainWindow):
         else:
             self.canvas.refresh_grid()
 
+    def reset_selected_length(self):
+        if not self.selected_id or not self.selected_joint:
+            return
+        entity = get_entity(self.project, self.selected_id)
+        if entity["kind"] != "stickman" or self.selected_joint == "pelvis":
+            return
+        joint = self.selected_joint
+        if abs(entity.get("segment_scales", {}).get(joint, 1.0) - 1.0) > 1e-9:
+            self.mutate(lambda: set_segment_scale(entity, joint, 1.0))
+        else:
+            self.segment_length.setValue(100)
+
     def change_segment_length(self, value):
         if not self.selected_id or not self.selected_joint:
             return
@@ -1290,6 +1408,7 @@ class MainWindow(QMainWindow):
             values = (e.get("segment_scales", {}).get(joint, 1.0) * 100,
                       e.get("segment_bends", {}).get(joint, 0) * 100) if e["kind"] == "stickman" else (100, e.get("bend", 0) * 100)
             self.segment_length.setEnabled(e["kind"] == "stickman")
+            self.reset_length_button.setVisible(e["kind"] == "stickman")
             for control, value in ((self.segment_length, values[0]),
                                    (self.segment_bend_spin, values[1])):
                 control.blockSignals(True)
@@ -1601,15 +1720,16 @@ class MainWindow(QMainWindow):
             self.toggle_play()
 
     def about(self):
-        QMessageBox.information(self, "StickRig Studio 0.5",
-                                "StickRig Studio 0.5 — prototype\n\n"
+        QMessageBox.information(self, "StickRig Studio 0.5.2",
+                                "StickRig Studio 0.5.2 — prototype\n\n"
                                 "Esc: leave placement and return to Select / Move.\n"
-                                "Drag joint to pose; Shift+drag joint changes visible limb length.\n"
+                                "Drag joint to pose; Shift+drag adjusts length independently of Snap.\n"
+                                "Reset length to 100% in Inspector; near 100% Shift drag snaps back.\n"
                                 "Alt+drag a bone bends it; Inspector edits length and curvature.\n"
                                 "Drag line endpoints to rotate/shorten a staff; Alt+drag line to curve.\n"
                                 "Grid / Show / Snap / Step: separate scene-pixel grid controls.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
-                                "Frames: + adds blank frame; Ctrl+D duplicates pose; right-click for more.\n"
+                                "Frames: + adds blank frame; Ctrl+D duplicates pose; active frame stays in view.\n"
                                 "Playback is a movable bottom dock above Elements.\n"
                                 "Elements follow the pointer as a transparent placement preview.\n"
                                 "Camera: static X/Y/zoom, Frame camera (Ctrl+0).\n"

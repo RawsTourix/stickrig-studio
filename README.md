@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.5.1 prototype (restored window state, responsive full-workspace grid, precise selection).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.5.2 prototype (long-frame thumbnails, reliable current-frame focus and precise joint posing).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -29,13 +29,13 @@ Alternatively run `stickrig` or `stickrig-cli` after installation. Video export 
 
 For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-## Controls in v0.5.1
+## Controls in v0.5.2
 
 | Tool | Action |
 | --- | --- |
 | `+ Stickman` | Click to place a minimalist stickman (one torso, bent arms and legs); dimensions start from the scene's grid step |
 | `Esc` | Immediately exit element placement and return to **Select / Move** |
-| `Select / Move` | Click an object to select it; click empty space to deselect. Drag a joint to pose; **Shift+drag joint** changes apparent limb length; **Alt+drag bone** bends it; Inspector supports exact length/bend |
+| `Select / Move` | Click an object to select it; click empty space to deselect. Drag a joint to pose; **Shift+drag joint** changes apparent limb length without grid rounding (magnet near 100%); **Alt+drag bone** bends it; Inspector can reset length to 100% |
 | `Line`, `Rectangle`, `Ellipse` | Draw primitives; **drag line endpoints** to shorten/rotate props (e.g. staffs), **Alt+drag line** or Inspector to bend a line |
 | `+` under Frames | Insert a **completely empty** frame after the current one; do not inherit objects or a background |
 | Duplicate frame (`Ctrl+D` or copy button) | Create an **independent editable copy** of the current frame's stickmen and shapes |
@@ -46,7 +46,7 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | Two-finger touchpad swipe / wheel / middle mouse | Pan with zoom-dependent sensitivity: zoomed-in movement is more precise, zoomed-out movement travels faster. **Ctrl+wheel/scroll** zooms around cursor |
 | `Grid`, `Show`, `Snap`, `Step` | Grid across the **entire editing workspace**, even outside the output camera; step visibly updates immediately. Show/hide and snapping are independent. Cell size is in scene pixels (1–200), saved per project. |
 | Inspector, Layers, Camera | Independent dock panels. Drag title bars, resize, tabify, float or hide; reopen from **View** menu |
-| **Frames** sidebar | Right-click for actions; eye/duplicate/trash quick buttons at the bottom of each card. Drag from the **right dotted grip**: a translucent card follows the pointer, **only the crossed neighboring cards** slide aside after their center-point threshold, a purple insertion line marks the destination, and holding near an edge auto-scrolls. |
+| **Frames** sidebar | Automatically keeps the selected frame in view after navigation, duplication and insertion; lazy thumbnails follow scrolling even beyond 10 frames. Right-click for actions; eye/duplicate/trash quick buttons at the bottom of each card. Drag from the **right dotted grip**: a translucent card follows the pointer, **only the crossed neighboring cards** slide aside after their center-point threshold, a purple insertion line marks the destination, and holding near an edge auto-scrolls. |
 | **Elements** panel | Select an element to see a translucent preview under the cursor before placing it in the scene |
 | **Playback strip** | Compact independent toolbar at the bottom of the window: frame navigation, play/pause and FPS |
 | **Zoom controls** | Lower-right overlay on the canvas shows current **viewport zoom percentage** with −, +, Fit; it is independent of camera zoom |
@@ -55,7 +55,7 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save (including panel layout), undo, redo |
 | `←`, `→`, `Space`, `Ctrl+D` | Previous/next frame, play/pause, insert duplicate hold frame |
 
-**Performance:** the vector editing grid uses QPainter background rendering and allocates **no graphics item per grid line**. Grid redraw follows toolbar changes without rebuilding frame objects. Only visible frame thumbnails are rasterized directly at 128-pixel width. A lightweight item delegate paints quick buttons without creating separate widgets per frame. During reordering, only visible rows participate in Qt animations with continuous 16ms retargeting and a smoothed insertion marker. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.
+**Performance:** the vector editing grid uses QPainter background rendering and allocates **no graphics item per grid line**. Grid redraw follows toolbar changes without rebuilding frame objects. Only visible frame thumbnails are rasterized directly at 128-pixel width. Their visible range is derived from actual item geometry (not a potentially empty hit-test in card margins), keeping long timelines responsive. A lightweight item delegate paints quick buttons without creating separate widgets per frame. During reordering, only visible rows participate in Qt animations with continuous 16ms retargeting and a smoothed insertion marker. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.
 
 **Frame content:** new stickmen and shapes belong only to the frame where they were created. They do **not** automatically become background objects or appear in adjacent frames. An explicit duplicate makes new object IDs; the + button makes a blank frame. For compatibility, older files with objects lacking `frame_index` retain their historical global/held behavior. This old information cannot be inferred safely: use a new project to verify the new default or explicitly clean up a legacy project. Onion skin and the translucent placement preview are editor overlays, not extra saved objects.
 
@@ -140,6 +140,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [17 — Independent frame content](docs/17-frame-local-content-v0.4.2.md) | Per-frame objects, empty +, duplicate semantics and drag threshold |
 | [18 — Minimal stickman and grid](docs/18-simple-rig-grid-escape-v0.5.md) | Esc, minimal silhouette, bend/shorten bones, and adjustable vector grid |
 | [19 — Workspace fixes](docs/19-window-grid-selection-v0.5.1.md) | Remember maximized window, responsive scene-wide grid and precise selection |
+| [20 — Long animation workflow](docs/20-long-frames-and-joints-v0.5.2.md) | Reliable thumbnails and frame focus, nearest joint picking and resettable limb length |
 
 ## Licensing and attribution
 

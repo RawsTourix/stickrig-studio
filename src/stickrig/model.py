@@ -100,6 +100,28 @@ def segment_bend(entity: dict[str, Any], joint: str) -> float:
     return float(entity.get("segment_bends", {}).get(joint, 0.0))
 
 
+def segment_scale_for_drag(entity: dict[str, Any], joint: str,
+                           parent_position: tuple[float, float],
+                           pointer: tuple[float, float]) -> float:
+    """Unsnapped apparent-length ratio with a magnet at the rest pose.
+
+    The modifier used for foreshortening intentionally bypasses grid snapping:
+    distance is measured continuously from the parent joint in world space,
+    independently of the segment's current length or current angle. A small
+    dead zone around 100% restores the canonical rest length exactly.
+    """
+    if joint not in rig_offsets(entity) or joint == "pelvis":
+        raise ValueError("invalid segment")
+    baseline = math.hypot(*rig_offsets(entity)[joint][1])
+    baseline *= float(entity.get("rig_unit", 10.0)) / 10.0
+    if baseline < 1e-6:
+        raise ValueError("cannot resize a zero-length segment")
+    scale = math.dist(parent_position, pointer) / baseline
+    if abs(scale - 1.0) <= 0.065:
+        return 1.0
+    return round(max(0.2, min(2.5, scale)), 3)
+
+
 def set_segment_scale(entity: dict[str, Any], joint: str, value: float) -> None:
     if joint not in rig_offsets(entity) or joint == "pelvis":
         raise ValueError("invalid segment")
