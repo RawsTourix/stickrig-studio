@@ -217,6 +217,13 @@ class Project:
             _color(e.get("color"))
             if type(e.get("visible", True)) is not bool:
                 raise ValueError("entity.visible must be boolean")
+            # Frame-local elements belong exclusively to one authored frame.
+            # Unscoped entities are accepted as legacy/global objects; only a
+            # deliberate future background feature should create new globals.
+            if "frame_index" in e:
+                idx = e["frame_index"]
+                if type(idx) is not int or not 0 <= idx < duration:
+                    raise ValueError("entity.frame_index must be within duration")
             sw = _number(e.get("stroke_width", 3), "stroke_width")
             if not 0.2 <= sw <= 80:
                 raise ValueError("stroke_width must be 0.2..80")
@@ -283,18 +290,28 @@ class Project:
 
 
 def make_stickman(x: float, y: float, color: str = "#17191f", *,
-                  layer_id: str = "actors", entity_id: str | None = None) -> dict[str, Any]:
-    return {"id": _id(entity_id or new_id("stick")), "kind": "stickman", "layer_id": layer_id,
-            "position": _point([x, y], "position"), "color": _color(color), "stroke_width": 4,
-            "head_filled": False, "pose": {}}
+                  layer_id: str = "actors", entity_id: str | None = None,
+                  frame_index: int | None = None) -> dict[str, Any]:
+    result = {"id": _id(entity_id or new_id("stick")), "kind": "stickman",
+              "layer_id": layer_id, "position": _point([x, y], "position"),
+              "color": _color(color), "stroke_width": 4,
+              "head_filled": False, "pose": {}}
+    if frame_index is not None:
+        result["frame_index"] = frame_index
+    return result
 
 
 def make_shape(kind: str, a: list[float], b: list[float], color: str = "#30343e", *,
-               layer_id: str = "background", entity_id: str | None = None) -> dict[str, Any]:
+               layer_id: str = "background", entity_id: str | None = None,
+               frame_index: int | None = None) -> dict[str, Any]:
     if kind not in ("line", "rectangle", "circle"):
         raise ValueError(f"unsupported shape kind: {kind}")
-    return {"id": _id(entity_id or new_id(kind)), "kind": kind, "layer_id": layer_id,
-            "a": _point(a, "a"), "b": _point(b, "b"), "color": _color(color), "stroke_width": 3}
+    result = {"id": _id(entity_id or new_id(kind)), "kind": kind, "layer_id": layer_id,
+              "a": _point(a, "a"), "b": _point(b, "b"), "color": _color(color),
+              "stroke_width": 3}
+    if frame_index is not None:
+        result["frame_index"] = frame_index
+    return result
 
 
 def get_entity(project: Project, entity_id: str) -> dict[str, Any]:
@@ -340,6 +357,8 @@ def set_key(project: Project, entity_id: str, prop: str, frame: int, value: Any)
     if type(frame) is not int or not 0 <= frame < project.duration:
         raise ValueError("frame out of range")
     entity = get_entity(project, entity_id)
+    if "frame_index" in entity and entity["frame_index"] != frame:
+        raise ValueError("cannot edit an object outside its frame")
     if prop == "visible":
         if type(value) is not bool:
             raise ValueError("visible must be boolean")
@@ -412,46 +431,63 @@ def angle_for_drag(project: Project, entity: dict[str, Any], frame: int,
     return local
 
 
-def insert_frame(project: Project, after: int) -> int:
-    """Insert a hold frame after `after` without duplicating an entire pose.
+def insert_frame(project: Project, after: int, *,
+                 duplicate_local: bool = True) -> int:
+    """Duplicate an authored frame, independently copying its frame-local objects.
 
-    Under hold interpolation the new frame inherits values from its predecessor;
-    keys in later frames shift forward so their timing is preserved.
+    The old hold-track format is retained for legacy/global entities.
+    Locally authored figures and shapes instead receive new IDs so editing
+    the duplicate cannot unexpectedly modify the original frame.
     """
-    if not 0 <= after < project.duration or project.duration >= 100_000:
+    if type(after) is not int or not 0 <= after < project.duration or project.duration >= 100_000:
         raise ValueError("cannot insert frame")
+
+    local = []
+    if duplicate_local:
+        for e in project.scene["entities"]:
+            if e.get("frame_index") == after and value_at(project, e, "visible", after):
+                clone = copy.deepcopy(e)
+                clone["id"] = new_id(e["kind"])
+                clone["frame_index"] = after + 1
+                if e["kind"] == "stickman":
+                    clone["position"] = value_at(project, e, "position", after)
+                    clone["pose"] = {joint: value_at(project, e, f"pose.{joint}", after)
+                                     for joint in RIG_OFFSETS if joint != "pelvis"}
+                clone["visible"] = True
+                local.append(clone)
+
     for track in project.scene["tracks"]:
         for key in track["keyframes"]:
             if key["frame"] > after:
                 key["frame"] += 1
+    for e in project.scene["entities"]:
+        if e.get("frame_index", -1) > after:
+            e["frame_index"] += 1
     hidden = project.scene.get("hidden_frames", [])
     project.scene["hidden_frames"] = [i + 1 if i > after else i for i in hidden]
     project.scene["duration_frames"] += 1
+    project.scene["entities"].extend(local)
     return after + 1
 
 
 def insert_blank_frame(project: Project, after: int) -> int:
-    """Insert an empty animation frame without erasing the persistent background.
+    """Insert a genuinely empty frame, without cloning source-frame entities.
 
-    In contrast to insert_frame() (duplicate/inherit), this explicitly hides
-    animated objects on the inserted frame. Existing keyframes and the next
-    frame's visibility are preserved. A newly placed actor can then be keyed
-    into the empty frame independently of preceding poses.
-
-    Background-layer items remain persistent; they are scene resources rather
-    than per-frame animation drawings.
+    Legacy/unscoped objects are hidden on the new frame, and their visibility
+    on the *following* frame is restored. This also applies to objects in the
+    legacy background layer: only an explicitly requested feature may create
+    persistent scene content in new projects.
     """
     if type(after) is not int or not 0 <= after < project.duration:
         raise ValueError("cannot insert blank frame")
     next_was = after + 1
+    global_entities = [e for e in project.scene["entities"] if "frame_index" not in e]
     old_next = {
         e["id"]: value_at(project, e, "visible", next_was)
-        for e in project.scene["entities"] if e["layer_id"] != "background"
+        for e in global_entities
     } if next_was < project.duration else {}
-    new_frame = insert_frame(project, after)
-    for e in project.scene["entities"]:
-        if e["layer_id"] == "background":
-            continue
+    new_frame = insert_frame(project, after, duplicate_local=False)
+    for e in global_entities:
         set_key(project, e["id"], "visible", new_frame, False)
         if new_frame + 1 < project.duration:
             set_key(project, e["id"], "visible", new_frame + 1, old_next[e["id"]])
@@ -459,9 +495,14 @@ def insert_blank_frame(project: Project, after: int) -> int:
 
 
 def key_new_actor_visibility(project: Project, entity_id: str, frame: int) -> None:
-    """A newly created actor first appears in the authored frame, not earlier."""
+    """Legacy helper; frame-scoped entities need no visibility track."""
     if type(frame) is not int or not 0 <= frame < project.duration:
         raise ValueError("frame out of range")
+    entity = get_entity(project, entity_id)
+    if "frame_index" in entity:
+        if entity["frame_index"] != frame:
+            raise ValueError("frame does not match entity scope")
+        return
     if frame:
         set_key(project, entity_id, "visible", 0, False)
         set_key(project, entity_id, "visible", frame, True)
@@ -553,6 +594,9 @@ def move_frame(project: Project, source: int, target: int) -> int:
 
     _remap_tracks(project, duration, old_at_new, new_at_old,
                   (source, target, min(source, target), max(source, target)))
+    for entity in project.scene["entities"]:
+        if "frame_index" in entity:
+            entity["frame_index"] = new_at_old(entity["frame_index"])
     old_hidden = project.scene.get("hidden_frames", [])
     project.scene["hidden_frames"] = sorted(new_at_old(i) for i in old_hidden)
     return target
@@ -562,12 +606,22 @@ def delete_frame(project: Project, frame: int) -> int:
     if project.duration == 1 or type(frame) is not int or not 0 <= frame < project.duration:
         raise ValueError("cannot delete frame")
     old_duration = project.duration
+    removed_ids = {e["id"] for e in project.scene["entities"]
+                   if e.get("frame_index") == frame}
+    if removed_ids:
+        project.scene["entities"] = [e for e in project.scene["entities"]
+                                      if e["id"] not in removed_ids]
+        project.scene["tracks"] = [t for t in project.scene["tracks"]
+                                    if t["target_id"] not in removed_ids]
     _remap_tracks(
         project, old_duration - 1,
         lambda i: i if i < frame else i + 1,
         lambda i: None if i == frame else i if i < frame else i - 1,
         (frame,),
     )
+    for e in project.scene["entities"]:
+        if e.get("frame_index", -1) > frame:
+            e["frame_index"] -= 1
     old_hidden = project.scene.get("hidden_frames", [])
     project.scene["hidden_frames"] = [
         i if i < frame else i - 1 for i in old_hidden if i != frame
