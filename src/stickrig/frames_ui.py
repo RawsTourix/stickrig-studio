@@ -308,7 +308,7 @@ class FrameStrip(QListWidget):
         self._drag_active = True
         self._active_source = source
         self._drop_target = source
-        self._drop_slot = source
+        self._drop_slot = None
         self._line_y = None
         self._line_target = None
         self._gap_timer.stop()
@@ -466,17 +466,53 @@ class FrameStrip(QListWidget):
             return previous
         return proposed
 
+    def _threshold_destination(self, pointer: QPoint) -> int:
+        """Move only after the dragged CARD center crosses another card center.
+
+        Using the pointer's row allowed unrelated lower cards to move even
+        when the user had just begun dragging the middle card upward. The
+        handle can be grabbed anywhere; its hotspot must be accounted for.
+        Eight-pixel enter/exit hysteresis prevents rapid back-and-forth swaps.
+        """
+        source = self._active_source
+        if not 0 <= source < self.count():
+            return source
+        height = (self._drag_card.height() if self._drag_card is not None
+                  else self.visualItemRect(self.item(source)).height())
+        hotspot = self._drag_hotspot.y() if self._drag_card is not None else height / 2
+        center = pointer.y() - hotspot + height / 2
+        previous = self._drop_target if self._drop_target is not None else source
+        margin = self._slot_hysteresis_px
+        destination = source
+        for row in self._visible_rows():
+            if row == source:
+                continue
+            midpoint = self.visualItemRect(self.item(row)).center().y()
+            if row < source:
+                boundary = midpoint + margin if previous <= row else midpoint - margin
+                if center <= boundary:
+                    destination = min(destination, row)
+            else:
+                boundary = midpoint - margin if previous >= row else midpoint + margin
+                if center >= boundary:
+                    destination = max(destination, row)
+        return destination
+
     def _update_target(self, point: QPoint):
         if not self._drag_active:
             return
-        slot = self._stable_slot(self._insertion_slot(point), point)
-        destination = slot - int(slot > self._active_source)
-        destination = max(0, min(self.count() - 1, destination))
+        destination = self._threshold_destination(point)
+        # No visual rearrangement (and no insertion line) before a neighbor
+        # is genuinely crossed. Only affected rows may animate after that.
+        slot = (None if destination == self._active_source else
+                destination if destination < self._active_source else destination + 1)
         changed = slot != self._drop_slot
         self._drop_slot = slot
         self._animate_gap(destination)
         raw_line = self._slot_line_y()
-        if raw_line is not None:
+        if raw_line is None:
+            self._line_target = self._line_y = None
+        else:
             self._line_target = float(raw_line)
             if self._line_y is None:
                 self._line_y = self._line_target
