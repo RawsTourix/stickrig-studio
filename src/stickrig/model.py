@@ -215,6 +215,8 @@ class Project:
             if e.get("kind") not in ("stickman", "line", "rectangle", "circle"):
                 raise ValueError(f"unsupported entity kind: {e.get('kind')}")
             _color(e.get("color"))
+            if type(e.get("visible", True)) is not bool:
+                raise ValueError("entity.visible must be boolean")
             sw = _number(e.get("stroke_width", 3), "stroke_width")
             if not 0.2 <= sw <= 80:
                 raise ValueError("stroke_width must be 0.2..80")

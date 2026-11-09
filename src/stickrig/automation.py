@@ -6,8 +6,8 @@ import copy
 from typing import Any
 
 from .model import (Project, _color, _id, _number, _point, get_entity, get_layer,
-                    make_shape, make_stickman, set_key, insert_frame, delete_frame,
-                    move_frame, set_frame_hidden)
+                    make_shape, make_stickman, set_key, insert_frame, insert_blank_frame,
+                    key_new_actor_visibility, delete_frame, move_frame, set_frame_hidden)
 
 
 class RevisionConflict(ValueError):
@@ -41,6 +41,7 @@ def apply_patch(project: Project, patch: dict[str, Any], *, dry_run: bool = Fals
                                    layer_id=op.get("layer_id", "actors"), entity_id=op.get("id"))
             ensure_writable(entity["layer_id"])
             updated.scene["entities"].append(entity)
+            key_new_actor_visibility(updated, entity["id"], op.get("frame", 0))
             changes.append(f"add stickman {entity['id']}")
         elif cmd == "add_shape":
             entity = make_shape(op.get("kind"), _point(op.get("a"), "a"),
@@ -68,6 +69,11 @@ def apply_patch(project: Project, patch: dict[str, Any], *, dry_run: bool = Fals
                 set_key(updated, entity_id, f"pose.{joint}", frame,
                         _number(op.get("angle_deg"), "angle_deg"))
                 changes.append(f"rotate {entity_id}.{joint} at frame {frame}")
+        elif cmd == "set_entity_visibility":
+            e = get_entity(updated, _id(op.get("id")))
+            ensure_writable(e["layer_id"])
+            set_key(updated, e["id"], "visible", op.get("frame"), op.get("visible"))
+            changes.append(f"entity {e['id']} visibility at frame {op.get('frame')}")
         elif cmd == "set_layer_visibility":
             layer = get_layer(updated, _id(op.get("layer_id")))
             visible = op.get("visible")
@@ -85,15 +91,19 @@ def apply_patch(project: Project, patch: dict[str, Any], *, dry_run: bool = Fals
                     raise ValueError("camera.zoom must be 0.05..30")
                 camera["zoom"] = zoom
             changes.append("update camera")
-        elif cmd in ("insert_frame", "delete_frame", "move_frame", "set_frame_hidden"):
+        elif cmd in ("insert_frame", "insert_blank_frame", "delete_frame", "move_frame", "set_frame_hidden"):
             if cmd != "set_frame_hidden" and any(
                 layer["locked"] for layer in updated.scene["layers"]
             ):
                 raise ValueError("cannot change frame order with locked layers")
-            if cmd == "insert_frame":
+            if cmd in ("insert_frame", "insert_blank_frame"):
                 frame = op.get("after")
-                insert_frame(updated, frame)
-                changes.append(f"insert after frame {frame}")
+                if cmd == "insert_blank_frame":
+                    insert_blank_frame(updated, frame)
+                    changes.append(f"insert blank frame after {frame}")
+                else:
+                    insert_frame(updated, frame)
+                    changes.append(f"duplicate frame after {frame}")
             elif cmd == "delete_frame":
                 frame = op.get("frame")
                 delete_frame(updated, frame)
