@@ -149,7 +149,7 @@ def bezier_points(start: tuple[float, float], end: tuple[float, float],
 
 
 def stickman_strokes(entity: dict[str, Any], points: dict[str, tuple[float, float]]):
-    hidden = SIMPLE_HIDDEN_LINKS if entity.get("rig_style") == "simple" else {"head"}
+    hidden = SIMPLE_HIDDEN_LINKS if entity.get("rig_style") == "simple" else set()
     for joint, (parent, _) in rig_offsets(entity).items():
         if parent and joint not in hidden:
             yield joint, points[parent], points[joint], segment_bend(entity, joint)
@@ -297,8 +297,11 @@ class Project:
                 any(type(i) is not int or not 0 <= i < duration for i in hidden) or
                 hidden != sorted(set(hidden))):
             raise ValueError("hidden_frames must be sorted unique indices with one visible frame")
+        grid_data = s.get("grid", {})
+        if not isinstance(grid_data, dict):
+            raise ValueError("grid must be an object")
         grid = grid_settings(self)
-        if not isinstance(s.get("grid", {}), dict) or set(grid) != {"enabled", "visible", "snap", "spacing"}:
+        if set(grid) != {"enabled", "visible", "snap", "spacing"}:
             raise ValueError("grid must contain supported fields only")
         for flag in ("enabled", "visible", "snap"):
             if type(grid[flag]) is not bool:
