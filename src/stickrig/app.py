@@ -771,6 +771,7 @@ class MainWindow(QMainWindow):
                 item.setSizeHint(QSize(245, 112))
                 self.frames_list.addItem(item)
             self.frames_list.blockSignals(False)
+            self._previous_hidden_frames = set()
             content_changed = True
         if content_changed:
             self._thumb_epoch += 1
@@ -780,10 +781,14 @@ class MainWindow(QMainWindow):
                     item.setIcon(QIcon())
                     item.setData(Qt.ItemDataRole.UserRole + 1, -1)
             self._thumb_cache.clear()
-        hidden = set(self.project.scene.get("hidden_frames", []))
-        for row in range(self.frames_list.count()):
-            item = self.frames_list.item(row)
-            item.setData(Qt.ItemDataRole.UserRole + 3, row in hidden)
+        if content_changed:
+            hidden = set(self.project.scene.get("hidden_frames", []))
+            previous = getattr(self, "_previous_hidden_frames", set())
+            for row in hidden ^ previous:
+                item = self.frames_list.item(row)
+                if item is not None:
+                    item.setData(Qt.ItemDataRole.UserRole + 3, row in hidden)
+            self._previous_hidden_frames = hidden
         if self.frames_list.currentRow() != self.frame:
             self.frames_list.blockSignals(True)
             self.frames_list.setCurrentRow(self.frame)
