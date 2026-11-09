@@ -49,7 +49,7 @@ class Canvas(QGraphicsView):
         self.graphics.setSceneRect(-2000, -2000, 6000, 6000)
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setBackgroundBrush(QColor("#dfe4eb"))
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setMouseTracking(True)
@@ -751,21 +751,32 @@ class MainWindow(QMainWindow):
             self.frames_list.blockSignals(True)
             self.frames_list.clear()
             self._thumb_cache.clear()
+            # Item rows remain lightweight; thumbnail bitmaps are created lazily.
             for row in range(self.project.duration):
-                item = QListWidgetItem(f"Frame {row + 1}")
+                item = QListWidgetItem(str(row + 1))
                 item.setSizeHint(QSize(255, 96))
                 self.frames_list.addItem(item)
             self.frames_list.blockSignals(False)
+            self._displayed_hidden_frames = set()
             content_changed = True
         if content_changed:
             self._thumb_epoch += 1
+            for row in self._thumb_cache:
+                item = self.frames_list.item(row)
+                if item:
+                    item.setIcon(QIcon())
+                    item.setData(Qt.ItemDataRole.UserRole + 1, -1)
             self._thumb_cache.clear()
             hidden = set(self.project.scene.get("hidden_frames", []))
-            for row in range(self.frames_list.count()):
+            previous = getattr(self, "_displayed_hidden_frames", set())
+            # Only rows whose visibility changed need text/flag repaint.
+            for row in hidden ^ previous:
                 item = self.frames_list.item(row)
-                item.setText(f"{row + 1}" + ("  (hidden)" if row in hidden else ""))
-                item.setData(Qt.ItemDataRole.UserRole + 2, row in hidden)
-                item.setForeground(QColor("#8894a3" if row in hidden else "#20252d"))
+                if item is not None:
+                    item.setText(f"{row + 1}" + ("  (hidden)" if row in hidden else ""))
+                    item.setData(Qt.ItemDataRole.UserRole + 2, row in hidden)
+                    item.setForeground(QColor("#8894a3" if row in hidden else "#20252d"))
+            self._displayed_hidden_frames = hidden
         if self.frames_list.currentRow() != self.frame:
             self.frames_list.blockSignals(True)
             self.frames_list.setCurrentRow(self.frame)

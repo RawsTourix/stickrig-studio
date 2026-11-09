@@ -151,3 +151,30 @@ def test_canvas_placement_ghost_never_creates_real_entity():
         w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
+
+
+def test_incremental_frame_badges_and_partial_viewport_update():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QGraphicsView
+    from stickrig.app import MainWindow
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        assert (w.canvas.viewportUpdateMode() ==
+                QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+        w.append_frame()
+        w.append_frame()
+        assert [w.frames_list.item(i).text() for i in range(3)] == ["1", "2", "3"]
+        w.toggle_frame_visibility(1)
+        assert w.frames_list.item(1).text().endswith("(hidden)")
+        assert w.frames_list.item(1).data(Qt.ItemDataRole.UserRole + 2) is True
+        w.set_frame(2)
+        assert w.frames_list.item(1).text().endswith("(hidden)")
+        w.toggle_frame_visibility(1)
+        assert w.frames_list.item(1).text() == "2"
+        assert w.frames_list.item(1).data(Qt.ItemDataRole.UserRole + 2) is False
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
