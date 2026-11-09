@@ -112,5 +112,7 @@ def test_canvas_zoom_hover_frame_controls_and_playback():
         for name, area in delegate.action_rects(rect).items():
             assert delegate.hit_action(rect, area.center()) == name
     finally:
+        window.stop_playback()
+        window.capture_workspace(force=True)
         window.saved_snapshot = window.project.to_dict()
         window.close()
