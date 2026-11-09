@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.1 prototype.** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.2 prototype (interactive workspace iteration).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -29,7 +29,7 @@ Alternatively run `stickrig` or `stickrig-cli` after installation. Video export 
 
 For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-## Controls in v0.1
+## Controls in v0.2
 
 | Tool | Action |
 | --- | --- |
@@ -41,11 +41,13 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | `Onion skin` | Show translucent pose from the previous frame (without ghosting static background) |
 | `▶ Play` | Preview animation with the selected FPS |
 | `Frame camera` (`Ctrl+0`) | Recenter the canvas view on the camera frame |
-| Middle mouse / mouse wheel | Pan / zoom **editor viewport**, independently from camera |
+| Two-finger touchpad swipe / wheel / middle mouse | Pan the canvas (middle mouse: drag); **Ctrl+wheel/scroll** zooms around cursor |
 | `Grid`, `Snap (10)` | Toggle viewport grid and 10-unit position snapping |
-| Inspector | Change object color, fill stickman's head, delete objects; lock/hide layers; adjust **static** camera |
-| `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save, undo, redo |
+| Inspector, Layers, Camera | Independent dock panels. Drag title bars, resize, tabify, float or hide; reopen from **View** menu |
+| **Frames** sidebar | Left-side vertical list with on-demand thumbnails. New project contains **one frame**; add frames manually |\n| **Elements** panel | Bottom library of basic stickman and vector primitives; choose one, then click/drag on canvas |\n| **View → Reset workspace** | Restore default panel layout; the current layout is stored inside the project JSON when saved |\n| `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save (including panel layout), undo, redo |
 | `←`, `→`, `Space`, `Ctrl+D` | Previous/next frame, play/pause, insert duplicate hold frame |
+
+**Performance:** only visible frame thumbnails are rasterized, directly at 128-pixel preview width. They are updated after scene changes, not at every playback tick. Projects created with earlier versions retain their existing frame count.
 
 Other capabilities: create/open/save structured `.stickrig.json`, silent MP4 export, PNG export, single-scene hold-keyframe animation and multiple independent characters.
 
@@ -111,7 +113,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [08 — Roadmap](docs/08-roadmap.md) | Milestones and next steps |
 | [09 — Decisions](docs/09-decisions.md) | Assumptions and open questions |
 | [10 — Acceptance scenario](docs/10-acceptance-scenario.md) | Training-hall animation as a test |
-| [11 — Prototype v0.1](docs/11-prototype-v0.1.md) | Exact implemented features and current constraints |
+| [11 — Prototype v0.1](docs/11-prototype-v0.1.md) | Initial implementation and constraints |\n| [12 — Workspace feedback v0.2](docs/12-workspace-feedback-v0.2.md) | Layout, trackpad gestures, frame thumbnails and testing |
 
 ## Licensing and attribution
 
