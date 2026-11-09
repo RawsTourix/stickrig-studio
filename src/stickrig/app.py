@@ -27,7 +27,8 @@ from .model import (History, Project, RIG_OFFSETS, SIMPLE_HIDDEN_LINKS,
                     insert_frame, insert_blank_frame, joints_at,
                     key_new_actor_visibility, load_project, make_shape,
                     make_stickman, rig_offsets, save_project, segment_offset,
-                    set_key, set_segment_bend, set_segment_scale, snap_to_grid,
+                    set_key, set_segment_bend, set_segment_scale,
+                    segment_scale_for_drag, snap_to_grid,
                     stickman_strokes, value_at)
 from .render import export_mp4, render_image, visible_entities
 from .frames_ui import FrameStrip
@@ -495,8 +496,9 @@ class Canvas(QGraphicsView):
         event.accept()
 
     def mouseMoveEvent(self, event):
-        point = self.snap(self.to_world(event))
-        self.editor.update_canvas_coordinates(point)
+        raw_point = self.to_world(event)
+        point = self.snap(raw_point)
+        self.editor.update_canvas_coordinates(raw_point)
         if self.panning and self.pan_start is not None:
             current = event.position().toPoint()
             delta = current - self.pan_start
@@ -518,16 +520,17 @@ class Canvas(QGraphicsView):
                         set_segment_bend(e, joint,
                                          bend_for_drag(points[parent], points[joint], point))
                 else:
-                    if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    resizing = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                    if resizing:
                         points, _ = joints_at(self.editor.project, e, self.editor.frame)
                         parent = rig_offsets(e)[joint][0]
-                        if parent:
-                            base = math.hypot(*rig_offsets(e)[joint][1])
-                            if base > 0.001:
-                                unit = e.get("rig_unit", 10) / 10.0
-                                factor = math.dist(point, points[parent]) / (base * unit)
-                                set_segment_scale(e, joint, max(0.2, min(2.5, factor)))
-                    angle = angle_for_drag(self.editor.project, e, self.editor.frame, joint, point)
+                        if parent and math.hypot(*rig_offsets(e)[joint][1]) > 1e-6:
+                            set_segment_scale(e, joint, segment_scale_for_drag(
+                                e, joint, points[parent], raw_point))
+                    # Shift length editing intentionally bypasses grid snapping.
+                    # Regular joint posing continues to respect Snap.
+                    target = raw_point if resizing else point
+                    angle = angle_for_drag(self.editor.project, e, self.editor.frame, joint, target)
                     set_key(self.editor.project, self.drag_id,
                             f"pose.{joint}", self.editor.frame, angle)
             elif e["kind"] == "stickman":
@@ -727,6 +730,10 @@ class MainWindow(QMainWindow):
         self.segment_length.setSuffix(" %")
         self.segment_length.valueChanged.connect(self.change_segment_length)
         segment_layout.addWidget(self.segment_length)
+        self.reset_length_button = QPushButton("Reset length to 100%", self.segment_box)
+        self.reset_length_button.setToolTip("Restore the selected limb's default length")
+        self.reset_length_button.clicked.connect(self.reset_selected_length)
+        segment_layout.addWidget(self.reset_length_button)
         segment_layout.addWidget(QLabel("Curve / bend"))
         self.segment_bend_spin = QDoubleSpinBox(self.segment_box)
         self.segment_bend_spin.setRange(-100, 100)
@@ -1340,6 +1347,18 @@ class MainWindow(QMainWindow):
         else:
             self.canvas.refresh_grid()
 
+    def reset_selected_length(self):
+        if not self.selected_id or not self.selected_joint:
+            return
+        entity = get_entity(self.project, self.selected_id)
+        if entity["kind"] != "stickman" or self.selected_joint == "pelvis":
+            return
+        joint = self.selected_joint
+        if abs(entity.get("segment_scales", {}).get(joint, 1.0) - 1.0) > 1e-9:
+            self.mutate(lambda: set_segment_scale(entity, joint, 1.0))
+        else:
+            self.segment_length.setValue(100)
+
     def change_segment_length(self, value):
         if not self.selected_id or not self.selected_joint:
             return
@@ -1389,6 +1408,7 @@ class MainWindow(QMainWindow):
             values = (e.get("segment_scales", {}).get(joint, 1.0) * 100,
                       e.get("segment_bends", {}).get(joint, 0) * 100) if e["kind"] == "stickman" else (100, e.get("bend", 0) * 100)
             self.segment_length.setEnabled(e["kind"] == "stickman")
+            self.reset_length_button.setVisible(e["kind"] == "stickman")
             for control, value in ((self.segment_length, values[0]),
                                    (self.segment_bend_spin, values[1])):
                 control.blockSignals(True)
