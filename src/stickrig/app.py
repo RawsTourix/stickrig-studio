@@ -390,39 +390,70 @@ class Canvas(QGraphicsView):
         self.update_placement_preview()
 
     def _pick(self, point: tuple[float, float], *, segment=False):
-        threshold = 13 / max(self.transform().m11(), 0.05)
-        for e in reversed(list(visible_entities(self.editor.project, self.editor.frame))):
+        """Choose the nearest handle, not the first joint in rig order.
+
+        At small viewport zoom the hit radii of knees/ankles can overlap.
+        Prefer the actually closest joint; repeated clicks cycle only through
+        near-identical locations when their screen-space positions coincide.
+        """
+        scale = max(0.05, abs(self.transform().m11()))
+        radius = 12.0 / scale
+        near_equal_radius = 2.0 / scale
+        handles = []
+        bodies = []
+        entities = reversed(list(visible_entities(self.editor.project, self.editor.frame)))
+        for order, e in enumerate(entities):
             if get_layer(self.editor.project, e["layer_id"])["locked"]:
                 continue
+            ident = e["id"]
             if e["kind"] == "stickman":
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
                 if not segment:
-                    for joint, xy in reversed(list(points.items())):
+                    for joint, xy in points.items():
                         if (e.get("rig_style") == "simple" and
                                 joint in SIMPLE_HIDDEN_LINKS and joint != "head"):
                             continue
-                        if math.dist(point, xy) < threshold:
-                            return e["id"], joint
+                        distance = math.dist(point, xy)
+                        if distance <= radius:
+                            handles.append((distance, order, ident, joint))
                 for joint, a, b, bend in stickman_strokes(e, points):
                     samples = bezier_points(a, b, bend)
-                    if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
-                           for i in range(len(samples) - 1)):
-                        return e["id"], joint if segment else None
+                    distance = min(_distance_segment(point, samples[i], samples[i + 1])
+                                   for i in range(len(samples) - 1))
+                    if distance <= radius:
+                        bodies.append((distance, order, ident,
+                                       joint if segment else None))
             elif e["kind"] == "line":
                 if not segment:
                     for endpoint in ("a", "b"):
-                        if math.dist(point, e[endpoint]) < threshold:
-                            return e["id"], endpoint
+                        distance = math.dist(point, e[endpoint])
+                        if distance <= radius:
+                            handles.append((distance, order, ident, endpoint))
                 samples = bezier_points(tuple(e["a"]), tuple(e["b"]), e.get("bend", 0))
-                if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
-                       for i in range(len(samples) - 1)):
-                    return e["id"], None
+                distance = min(_distance_segment(point, samples[i], samples[i + 1])
+                               for i in range(len(samples) - 1))
+                if distance <= radius:
+                    bodies.append((distance, order, ident, None))
             else:
                 a, b = e["a"], e["b"]
                 x1, x2 = sorted((a[0], b[0]))
                 y1, y2 = sorted((a[1], b[1]))
-                if x1 - threshold <= point[0] <= x2 + threshold and y1 - threshold <= point[1] <= y2 + threshold:
-                    return e["id"], None
+                if (x1 - radius <= point[0] <= x2 + radius and
+                        y1 - radius <= point[1] <= y2 + radius):
+                    bodies.append((radius, order, ident, None))
+        if handles:
+            handles.sort(key=lambda hit: (hit[0], hit[1]))
+            nearest = handles[0][0]
+            similar = [hit for hit in handles if hit[0] <= nearest + near_equal_radius]
+            current = (self.editor.selected_id, self.editor.selected_joint)
+            if len(similar) > 1 and (similar[0][2], similar[0][3]) == current:
+                for hit in similar[1:]:
+                    if (hit[2], hit[3]) != current:
+                        return hit[2], hit[3]
+            return handles[0][2], handles[0][3]
+        if bodies:
+            bodies.sort(key=lambda hit: (hit[0], hit[1]))
+            return bodies[0][2], bodies[0][3]
         return None, None
 
     def mousePressEvent(self, event):
