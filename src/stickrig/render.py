@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .model import Project, RIG_OFFSETS, joints_at
+from .model import Project, RIG_OFFSETS, joints_at, playable_frames
 
 
 def visible_entities(project: Project):
@@ -92,6 +92,9 @@ def export_mp4(project: Project, path: str | Path, *, ffmpeg: str = "ffmpeg",
                progress=None) -> None:
     """Encode frames via ffmpeg stdin, without intermediate PNGs."""
     project.validate()
+    frames = playable_frames(project)
+    if not frames:
+        raise ValueError("cannot export: all frames are hidden")
     binary = shutil.which(ffmpeg)
     if not binary:
         raise RuntimeError("FFmpeg not found. Install it and add ffmpeg to PATH.")
@@ -107,10 +110,10 @@ def export_mp4(project: Project, path: str | Path, *, ffmpeg: str = "ffmpeg",
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert proc.stdin is not None
-        for f in range(project.duration):
+        for i, f in enumerate(frames):
             proc.stdin.write(render_image(project, f).tobytes())
             if progress:
-                progress(f + 1, project.duration)
+                progress(i + 1, len(frames))
         proc.stdin.close()
         proc.stdin = None
         _, stderr = proc.communicate()
