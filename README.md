@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.2 prototype (interactive workspace iteration).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.3 prototype (canvas and frame workflow improvements).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -29,7 +29,7 @@ Alternatively run `stickrig` or `stickrig-cli` after installation. Video export 
 
 For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-## Controls in v0.2
+## Controls in v0.3
 
 | Tool | Action |
 | --- | --- |
@@ -41,13 +41,13 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | `Onion skin` | Show translucent pose from the previous frame (without ghosting static background) |
 | `▶ Play` | Preview animation with the selected FPS |
 | `Frame camera` (`Ctrl+0`) | Recenter the canvas view on the camera frame |
-| Two-finger touchpad swipe / wheel / middle mouse | Pan the canvas (middle mouse: drag); **Ctrl+wheel/scroll** zooms around cursor |
+| Two-finger swipe / wheel / middle mouse | Zoom-sensitive panning; **Ctrl+wheel/scroll** zooms around cursor. Canvas lower-right toolbar shows actual view zoom with **− / % / +** |
 | `Grid`, `Snap (10)` | Toggle viewport grid and 10-unit position snapping |
 | Inspector, Layers, Camera | Independent dock panels. Drag title bars, resize, tabify, float or hide; reopen from **View** menu |
-| **Frames** sidebar | Left-side vertical list with on-demand thumbnails. New project contains **one frame**; add frames manually |\n| **Elements** panel | Bottom library of basic stickman and vector primitives; choose one, then click/drag on canvas |\n| **View → Reset workspace** | Restore default panel layout; the current layout is stored inside the project JSON when saved |\n| `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save (including panel layout), undo, redo |
+| **Frames** sidebar | Vertical thumbnails with right-click context menus, quick hide/duplicate/delete controls and a left-hand drag grip to reorder poses. Hidden frames are skipped by playback and MP4 export. |\n| **Elements** panel | Bottom library of basic stickman and vector primitives; selecting a model displays a translucent cursor preview before placement |\n| **Preview** bar | Slim bottom toolbar with playback, frame number and FPS, independent of the Frames dock |\n| **View → Reset workspace** | Restore default panel layout; the current layout is stored inside the project JSON when saved |\n| `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save (including panel layout), undo, redo |
 | `←`, `→`, `Space`, `Ctrl+D` | Previous/next frame, play/pause, insert duplicate hold frame |
 
-**Performance:** only visible frame thumbnails are rasterized, directly at 128-pixel preview width. They are updated after scene changes, not at every playback tick. Projects created with earlier versions retain their existing frame count.
+**Performance:** only visible frame thumbnails are rasterized, directly at 128-pixel preview width. Frame quick actions are delegate-painted, avoiding a widget per frame. They are updated after scene changes, not at every playback tick. Projects created with earlier versions retain their existing frame count.
 
 Other capabilities: create/open/save structured `.stickrig.json`, silent MP4 export, PNG export, single-scene hold-keyframe animation and multiple independent characters.
 
@@ -85,7 +85,7 @@ src/stickrig/model.py         # Versioned JSON model, rig math, frame edits and 
 src/stickrig/render.py        # Deterministic Pillow preview/FFmpeg video export
 src/stickrig/automation.py    # Validated atomic AI-friendly operations
 src/stickrig/cli.py           # Headless CLI for inspect/apply/render/export
-src/stickrig/app.py           # PySide6 GUI and pose interaction
+src/stickrig/app.py           # PySide6 GUI and pose interaction\nsrc/stickrig/frame_ui.py      # Thumbnail row controls, context menus, drag reorder\nsrc/stickrig/view_math.py     # Zoom-dependent navigation\nsrc/stickrig/i18n.py          # English/Russian message catalogs (foundation)
 tests/                        # Core, rendering, AI patch and Qt smoke tests
 examples/                     # Example project and an AI-style scene patch
 docs/                         # Concept and development documentation
@@ -113,7 +113,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [08 — Roadmap](docs/08-roadmap.md) | Milestones and next steps |
 | [09 — Decisions](docs/09-decisions.md) | Assumptions and open questions |
 | [10 — Acceptance scenario](docs/10-acceptance-scenario.md) | Training-hall animation as a test |
-| [11 — Prototype v0.1](docs/11-prototype-v0.1.md) | Initial implementation and constraints |\n| [12 — Workspace feedback v0.2](docs/12-workspace-feedback-v0.2.md) | Layout, trackpad gestures, frame thumbnails and testing |
+| [11 — Prototype v0.1](docs/11-prototype-v0.1.md) | Initial implementation and constraints |\n| [12 — Workspace feedback v0.2](docs/12-workspace-feedback-v0.2.md) | Layout, trackpad gestures, frame thumbnails and testing |\n| [13 — Editor UX v0.3](docs/13-editor-ux-v0.3.md) | Zoom sensitivity, placement previews, frame drag/drop, localization groundwork |
 
 ## Licensing and attribution
 
