@@ -197,6 +197,7 @@ class FrameStrip(QListWidget):
         self._slot_hysteresis_px = 8
         self._drag_card: QPixmap | None = None
         self._drag_hotspot = QPoint()
+        self._pending_drop = None
         self._pending_settle = None
         self._settle_row = -1
         self._settle_progress = 1.0
@@ -298,6 +299,7 @@ class FrameStrip(QListWidget):
         if self.count() < 2:
             return
         self._cancel_settle()
+        self._pending_drop = None
         rect = self.visualItemRect(self.item(source))
         self._drag_card = self._drag_pixmap(source)
         self._drag_hotspot = origin - rect.topLeft()
@@ -337,7 +339,12 @@ class FrameStrip(QListWidget):
         self._scroll_velocity = 0.0
         self._scroll_fraction = 0.0
         self.viewport().update()
-        if self._pending_settle is not None:
+        if self._pending_drop is not None:
+            # Let Windows finish the native drag event before repaint-heavy
+            # project mutation; changing QListWidget rows during dropEvent
+            # could produce a visible jump or lost final drag image.
+            QTimer.singleShot(0, self._commit_drop)
+        elif self._pending_settle is not None:
             QTimer.singleShot(0, self._animate_settle)
         else:
             self._drag_card = None
@@ -558,12 +565,25 @@ class FrameStrip(QListWidget):
         if destination is None:
             event.ignore()
             return
-        # Domain operation happens exactly once, after the final target is known.
+        # Keep the model unchanged until QDrag's nested OS event loop exits.
+        # This prevents a model/list rebuild while Windows is still dragging.
         start = event.position().toPoint() - self._drag_hotspot
-        self._pending_settle = (start, destination, self._drag_card)
+        self._pending_drop = (source, destination, start, self._drag_card)
+        event.acceptProposedAction()
+
+    def _commit_drop(self):
+        pending = self._pending_drop
+        self._pending_drop = None
+        if pending is None:
+            return
+        source, destination, start, pixmap = pending
+        if not (0 <= source < self.count() and 0 <= destination < self.count()):
+            self._drag_card = None
+            return
         if source != destination:
             self.editor.move_frame_to(source, destination)
-        event.acceptProposedAction()
+        self._pending_settle = (start, destination, pixmap)
+        self._animate_settle()
 
     def _cancel_settle(self):
         if self._settle_animation is not None:
