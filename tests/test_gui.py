@@ -30,7 +30,8 @@ def test_window_project_edit_save_and_reopen(tmp_path):
         w.path = path
         assert w.save_file()
         w.load_file(path)
-        assert len(w.project.scene["entities"]) == 1
+        assert len(w.project.scene["entities"]) == 2
+        assert {e["frame_index"] for e in w.project.scene["entities"]} == {0, 1}
         assert w.project.duration == 2
     finally:
         w.capture_workspace(force=True)
@@ -82,15 +83,14 @@ def test_preview_strip_and_frame_actions():
         hero = w.selected_id
         w.append_frame()
         w.append_frame()
-        set_key(w.project, hero, "pose.elbow_l", 1, 38)
+        second_id = next(e["id"] for e in w.project.scene["entities"]
+                         if e.get("frame_index") == 1)
+        set_key(w.project, second_id, "pose.elbow_l", 1, 38)
         w.after_change()
-        before = [value_at(w.project, get_entity(w.project, hero),
-                           "pose.elbow_l", i) for i in range(3)]
         w.move_frame_to(1, 2)
-        expected = before[:]
-        expected.insert(2, expected.pop(1))
-        assert [value_at(w.project, get_entity(w.project, hero),
-                         "pose.elbow_l", i) for i in range(3)] == expected
+        assert get_entity(w.project, second_id)["frame_index"] == 2
+        assert value_at(w.project, get_entity(w.project, second_id),
+                        "pose.elbow_l", 2) == 38
         w.toggle_frame_visibility(1)
         assert w.project.scene["hidden_frames"] == [1]
         w.toggle_play()
@@ -209,7 +209,10 @@ def test_graphicsgale_style_docks_and_blank_frame_button():
         assert value_at(w.project, get_entity(w.project, ident), "visible", 0)
         w.duplicate_frame_at(0)
         assert w.project.duration == 3
-        assert value_at(w.project, get_entity(w.project, ident), "visible", 1)
+        assert not value_at(w.project, get_entity(w.project, ident), "visible", 1)
+        copies = [e for e in w.project.scene["entities"] if e.get("frame_index") == 1]
+        assert len(copies) == 1
+        assert copies[0]["id"] != ident
         w.project.validate()
     finally:
         w.capture_workspace(force=True)
@@ -291,3 +294,44 @@ def test_frame_card_layout_and_bottom_actions():
         window.capture_workspace(force=True)
         window.saved_snapshot = window.project.to_dict()
         window.close()
+
+
+def test_gui_shapes_and_characters_are_frame_local_and_blank_is_blank(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    from stickrig.render import visible_entities
+    from stickrig.model import load_project
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        w.add_shape("line", (15, 15), (50, 15))
+        assert w.project.scene["entities"][0]["layer_id"] == "actors"
+        assert [e["kind"] for e in visible_entities(w.project, 0)] == ["line"]
+
+        w.frame_plus.click()
+        assert w.frame == 1
+        assert list(visible_entities(w.project, 1)) == []
+        assert w.selected_id is None
+
+        w.add_shape("circle", (100, 50), (130, 80))
+        assert [e["kind"] for e in visible_entities(w.project, 1)] == ["circle"]
+        w.frame_plus.click()
+        assert w.frame == 2
+        assert list(visible_entities(w.project, 2)) == []
+
+        w.add_stickman((180, 120))
+        assert [e["kind"] for e in visible_entities(w.project, 2)] == ["stickman"]
+        assert [e["kind"] for e in visible_entities(w.project, 1)] == ["circle"]
+        assert [e["kind"] for e in visible_entities(w.project, 0)] == ["line"]
+
+        path = tmp_path / "user-scenario.json"
+        w.path = path
+        assert w.save_file()
+        loaded = load_project(path)
+        assert [[e["kind"] for e in visible_entities(loaded, f)]
+                for f in range(3)] == [["line"], ["circle"], ["stickman"]]
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()

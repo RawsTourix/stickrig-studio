@@ -950,17 +950,18 @@ class MainWindow(QMainWindow):
     def add_stickman(self, point):
         if not self.can_edit_layer("actors"):
             return
-        obj = make_stickman(*point)
+        obj = make_stickman(*point, frame_index=self.frame)
         def add_actor():
             self.project.scene["entities"].append(obj)
-            key_new_actor_visibility(self.project, obj["id"], self.frame)
         self.mutate(add_actor)
         self.select_entity(obj["id"])
 
     def add_shape(self, kind, a, b):
-        if not self.can_edit_layer("background"):
+        # Drawing a line/shape does not make it a persistent background.
+        if not self.can_edit_layer("actors"):
             return
-        obj = make_shape(kind, list(a), list(b))
+        obj = make_shape(kind, list(a), list(b),
+                         layer_id="actors", frame_index=self.frame)
         self.mutate(lambda: self.project.scene["entities"].append(obj))
         self.select_entity(obj["id"])
 
@@ -976,6 +977,14 @@ class MainWindow(QMainWindow):
         if self._building:
             return
         self.frame = max(0, min(self.frame, self.project.duration - 1))
+        # A frame-local selection cannot silently edit an object belonging to
+        # another frame. Clear stale selection after insert, move or delete.
+        if self.selected_id and not any(
+            e["id"] == self.selected_id
+            for e in visible_entities(self.project, self.frame)
+        ):
+            self.selected_id = self.selected_joint = None
+            self.refresh_inspector()
         self.frame_spin.blockSignals(True)
         self.frame_spin.setMaximum(self.project.duration)
         self.frame_spin.setValue(self.frame + 1)
@@ -1099,6 +1108,12 @@ class MainWindow(QMainWindow):
 
     def set_frame(self, frame):
         self.frame = max(0, min(self.project.duration - 1, frame))
+        if self.selected_id and not any(
+            e["id"] == self.selected_id
+            for e in visible_entities(self.project, self.frame)
+        ):
+            self.selected_id = self.selected_joint = None
+            self.refresh_inspector()
         if self.playing and self.frame in self._play_sequence:
             self._play_cursor = self._play_sequence.index(self.frame)
         self.refresh(content_changed=False)

@@ -349,7 +349,7 @@ def test_random_reorder_and_delete_preserve_all_poses():
         p.validate()
 
 
-def test_blank_frame_preserves_background_but_hides_existing_actors():
+def test_blank_frame_has_no_inherited_background_or_actors():
     from stickrig.model import insert_blank_frame, visible_frame_indices
     from stickrig.render import visible_entities
     p = Project(width=320, height=180)
@@ -361,7 +361,7 @@ def test_blank_frame_preserves_background_but_hides_existing_actors():
     index = insert_blank_frame(p, 0)
     assert index == 1
     assert p.duration == 4
-    assert [e["kind"] for e in visible_entities(p, 1)] == ["line"]
+    assert list(visible_entities(p, 1)) == []
     assert {e["id"] for e in visible_entities(p, 2)} == {"hero", p.scene["entities"][0]["id"]}
     assert value_at(p, hero, "position", 3) == [210, 140]
     assert visible_frame_indices(p) == [0, 1, 2, 3]
@@ -405,3 +405,100 @@ def test_invalid_visibility_tracks_are_rejected():
     p.scene["tracks"][0]["keyframes"][0]["value"] = "yes"
     with pytest.raises(ValueError, match="visible"):
         p.validate()
+
+
+def test_independent_frame_compositions_duplicate_move_delete_and_roundtrip(tmp_path):
+    from stickrig.model import insert_blank_frame, move_frame
+    from stickrig.render import visible_entities
+
+    p = Project(width=320, height=180)
+    original = make_shape("line", [15, 15], [65, 15],
+                          layer_id="actors", entity_id="line-first", frame_index=0)
+    p.scene["entities"].append(original)
+
+    assert insert_blank_frame(p, 0) == 1
+    assert list(visible_entities(p, 1)) == []
+    second = make_shape("circle", [90, 40], [120, 70],
+                        layer_id="actors", entity_id="circle-second", frame_index=1)
+    p.scene["entities"].append(second)
+    assert [e["id"] for e in visible_entities(p, 0)] == ["line-first"]
+    assert [e["id"] for e in visible_entities(p, 1)] == ["circle-second"]
+
+    # Duplicate means an editable COPY, not a new global reference.
+    assert insert_frame(p, 1) == 2
+    clone = next(e for e in visible_entities(p, 2))
+    assert clone["id"] != second["id"] and clone["kind"] == "circle"
+    clone["a"] = [210, 80]
+    assert second["a"] == [90.0, 40.0]
+
+    third = make_stickman(240, 90, entity_id="hero-third", frame_index=2)
+    p.scene["entities"].append(third)
+    assert {e["kind"] for e in visible_entities(p, 2)} == {"circle", "stickman"}
+    assert [e["id"] for e in visible_entities(p, 1)] == ["circle-second"]
+    assert [e["id"] for e in visible_entities(p, 0)] == ["line-first"]
+
+    assert move_frame(p, 2, 0) == 0
+    assert {e["kind"] for e in visible_entities(p, 0)} == {"circle", "stickman"}
+    assert [e["id"] for e in visible_entities(p, 1)] == ["line-first"]
+    assert [e["id"] for e in visible_entities(p, 2)] == ["circle-second"]
+    p.validate()
+    dest = tmp_path / "frame-local.json"
+    save_project(p, dest)
+    loaded = load_project(dest)
+    assert loaded.to_dict() == p.to_dict()
+    assert delete_frame(loaded, 0) == 0
+    assert all(e["id"] not in (clone["id"], third["id"]) for e in loaded.scene["entities"])
+    assert [e["id"] for e in visible_entities(loaded, 0)] == ["line-first"]
+    loaded.validate()
+
+
+def test_frame_scope_validation_and_no_cross_frame_pose_edits():
+    p = Project()
+    p.scene["duration_frames"] = 3
+    e = make_stickman(100, 120, frame_index=1, entity_id="alone")
+    p.scene["entities"].append(e)
+    assert value_at(p, e, "visible", 1)
+    assert not value_at(p, e, "visible", 0)
+    assert not value_at(p, e, "visible", 2)
+    with pytest.raises(ValueError, match="outside its frame"):
+        set_key(p, e["id"], "pose.elbow_l", 0, 45)
+    e["frame_index"] = 3
+    with pytest.raises(ValueError, match="frame_index"):
+        p.validate()
+    e["frame_index"] = True
+    with pytest.raises(ValueError, match="frame_index"):
+        p.validate()
+
+
+def test_blank_frame_after_legacy_global_shape_is_truly_empty():
+    from stickrig.model import insert_blank_frame
+    from stickrig.render import visible_entities
+    p = Project()
+    p.scene["duration_frames"] = 3
+    legacy = make_shape("line", [0, 0], [40, 40], layer_id="background",
+                        entity_id="legacy")
+    p.scene["entities"].append(legacy)
+    insert_blank_frame(p, 0)
+    assert [e["id"] for e in visible_entities(p, 0)] == ["legacy"]
+    assert list(visible_entities(p, 1)) == []
+    assert [e["id"] for e in visible_entities(p, 2)] == ["legacy"]
+    p.validate()
+
+
+def test_duplicate_frame_bakes_stickman_pose_into_independent_actor():
+    from stickrig.render import visible_entities
+    p = Project()
+    original = make_stickman(120, 140, entity_id="source", frame_index=0)
+    p.scene["entities"].append(original)
+    set_key(p, "source", "pose.elbow_l", 0, 37)
+    set_key(p, "source", "position", 0, [200, 160])
+    assert insert_frame(p, 0) == 1
+    clone = next(e for e in visible_entities(p, 1))
+    assert clone["id"] != original["id"]
+    assert value_at(p, clone, "pose.elbow_l", 1) == 37
+    assert value_at(p, clone, "position", 1) == [200.0, 160.0]
+    set_key(p, clone["id"], "pose.elbow_l", 1, -25)
+    assert value_at(p, original, "pose.elbow_l", 0) == 37
+    assert [e["id"] for e in visible_entities(p, 0)] == ["source"]
+    assert [e["id"] for e in visible_entities(p, 1)] == [clone["id"]]
+    p.validate()

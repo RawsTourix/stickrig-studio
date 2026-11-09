@@ -270,3 +270,48 @@ def test_insertion_indicator_eases_to_new_slot_instead_of_teleporting():
         assert not strip._gap_timer.isActive()
     finally:
         _close(w)
+
+
+def test_drag_middle_card_up_only_displaces_upper_neighbor_after_crossing():
+    from PySide6.QtCore import QPoint
+    w = _window_with_frames(6)
+    try:
+        strip = w.frames_list
+        middle = strip.visualItemRect(strip.item(1))
+        upper = strip.visualItemRect(strip.item(0))
+        lower = strip.visualItemRect(strip.item(2))
+        strip._drag_active = True
+        strip._active_source = 1
+        strip._drop_target = 1
+        strip._drop_slot = None
+        strip._drag_card = strip._drag_pixmap(1)
+        strip._drag_hotspot = QPoint(strip._drag_card.width() - 20,
+                                     strip._drag_card.height() // 2)
+
+        # Small movement toward the upper frame: no other row may move.
+        strip._update_target(QPoint(middle.center().x(), upper.center().y() + 12))
+        assert strip._drop_target == 1
+        assert strip._drop_slot is None
+        assert strip._gap_to == {}
+        strip._step_gap(dt_ms=16)
+        assert strip._gap_offsets == {}
+
+        # Deliberately pass the upper neighbor's center and the 8px threshold.
+        strip._update_target(QPoint(middle.center().x(), upper.center().y() - 15))
+        assert strip._drop_target == 0
+        assert strip._drop_slot == 0
+        assert set(strip._gap_to) == {0}
+        assert strip._gap_to[0] > 0
+        assert 2 not in strip._gap_offsets
+        strip._step_gap(dt_ms=16)
+        assert strip._gap_offsets[0] > 0
+        assert 2 not in strip._gap_offsets
+
+        # Crossing the lower neighbor later moves only it, not an unrelated row.
+        strip._update_target(QPoint(middle.center().x(), lower.center().y() + 15))
+        assert strip._drop_target == 2
+        assert set(strip._gap_to) == {2}
+        assert strip._gap_to[2] < 0
+        strip._finish_drag()
+    finally:
+        _close(w)

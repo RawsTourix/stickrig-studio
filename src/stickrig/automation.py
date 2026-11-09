@@ -36,17 +36,30 @@ def apply_patch(project: Project, patch: dict[str, Any], *, dry_run: bool = Fals
             raise ValueError("each operation must be an object")
         cmd = op.get("op")
         if cmd == "add_stickman":
+            frame = op.get("frame", 0)
+            persistent = op.get("persistent", False)
+            if type(persistent) is not bool:
+                raise ValueError("persistent must be a boolean")
             entity = make_stickman(*_point(op.get("position"), "position"),
                                    color=op.get("color", "#17191f"),
-                                   layer_id=op.get("layer_id", "actors"), entity_id=op.get("id"))
+                                   layer_id=op.get("layer_id", "actors"),
+                                   entity_id=op.get("id"),
+                                   frame_index=None if persistent else frame)
             ensure_writable(entity["layer_id"])
             updated.scene["entities"].append(entity)
-            key_new_actor_visibility(updated, entity["id"], op.get("frame", 0))
+            if persistent:
+                key_new_actor_visibility(updated, entity["id"], frame)
             changes.append(f"add stickman {entity['id']}")
         elif cmd == "add_shape":
+            frame = op.get("frame", 0)
+            persistent = op.get("persistent", False)
+            if type(persistent) is not bool:
+                raise ValueError("persistent must be a boolean")
             entity = make_shape(op.get("kind"), _point(op.get("a"), "a"),
                                 _point(op.get("b"), "b"), color=op.get("color", "#30343e"),
-                                layer_id=op.get("layer_id", "background"), entity_id=op.get("id"))
+                                layer_id=op.get("layer_id", "actors"),
+                                entity_id=op.get("id"),
+                                frame_index=None if persistent else frame)
             ensure_writable(entity["layer_id"])
             updated.scene["entities"].append(entity)
             changes.append(f"add {entity['kind']} {entity['id']}")

@@ -16,8 +16,14 @@ def visible_entities(project: Project, frame: int | None = None):
         if not layer["visible"]:
             continue
         for entity in project.scene["entities"]:
-            if entity["layer_id"] == layer["id"] and (frame is None or value_at(project, entity, "visible", frame)):
-                yield entity
+            if entity["layer_id"] != layer["id"]:
+                continue
+            if frame is not None:
+                if "frame_index" in entity and entity["frame_index"] != frame:
+                    continue
+                if not value_at(project, entity, "visible", frame):
+                    continue
+            yield entity
 
 
 def render_image(project: Project, frame: int = 0, *, antialias: int = 2,
