@@ -426,10 +426,18 @@ def delete_frame(project: Project, frame: int) -> int:
         raise ValueError("cannot delete frame")
     for t in project.scene["tracks"]:
         keys = t["keyframes"]
+        # Preserve the successor's visible pose when deleting a keyframe
+        # whose value would otherwise be lost under hold interpolation.
+        removed = next((k for k in keys if k["frame"] == frame), None)
+        if (removed is not None and frame + 1 < project.duration and
+                all(k["frame"] != frame + 1 for k in keys)):
+            keys.append({"frame": frame + 1, "value": copy.deepcopy(removed["value"]),
+                         "interpolation": "hold"})
         t["keyframes"] = [k for k in keys if k["frame"] != frame]
         for k in t["keyframes"]:
             if k["frame"] > frame:
                 k["frame"] -= 1
+        t["keyframes"].sort(key=lambda k: k["frame"])
     project.scene["hidden_frames"] = [
         f - 1 if f > frame else f
         for f in project.scene.get("hidden_frames", []) if f != frame

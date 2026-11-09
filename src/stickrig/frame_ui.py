@@ -8,7 +8,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QListWidget, QMenu, QStyledItemDelegate,
+    QAbstractItemView, QListWidget, QMenu, QStyle, QStyledItemDelegate,
 )
 
 
@@ -43,7 +43,7 @@ class FrameDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index):
         painter.save()
         rect = option.rect.adjusted(2, 2, -2, -2)
-        selected = bool(option.state & option.state.State_Selected)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
         hidden = bool(index.data(Qt.ItemDataRole.UserRole + 3))
         painter.setPen(QPen(QColor("#88a4bf") if selected else QColor("#c4cfda"), 1))
         painter.setBrush(QColor("#dcebf9") if selected else QColor("#fafbfd"))
@@ -98,6 +98,7 @@ class FrameList(QListWidget):
         self.viewport().setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
         self.setMouseTracking(True)
@@ -110,7 +111,7 @@ class FrameList(QListWidget):
         index = self.indexAt(position)
         if not index.isValid():
             return -1, None
-        return index.row(), self.delegate.hit_action(self.visualRect(index), position)
+        return index.row(), self.delegate.hit_action(self.visualRect(index).adjusted(2, 2, -2, -2), position)
 
     def mousePressEvent(self, event):
         self._drag_allowed = False
