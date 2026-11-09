@@ -6,7 +6,8 @@ import copy
 from typing import Any
 
 from .model import (Project, _color, _id, _number, _point, get_entity, get_layer,
-                    make_shape, make_stickman, set_key, insert_frame, insert_blank_frame,
+                    grid_settings, make_shape, make_stickman, set_key,
+                    set_segment_scale, set_segment_bend, insert_frame, insert_blank_frame,
                     key_new_actor_visibility, delete_frame, move_frame, set_frame_hidden)
 
 
@@ -44,7 +45,9 @@ def apply_patch(project: Project, patch: dict[str, Any], *, dry_run: bool = Fals
                                    color=op.get("color", "#17191f"),
                                    layer_id=op.get("layer_id", "actors"),
                                    entity_id=op.get("id"),
-                                   frame_index=None if persistent else frame)
+                                   frame_index=None if persistent else frame,
+                                   rig_style=op.get("rig_style"),
+                                   rig_unit=op.get("rig_unit", grid_settings(updated)["spacing"]))
             ensure_writable(entity["layer_id"])
             updated.scene["entities"].append(entity)
             if persistent:
@@ -63,6 +66,31 @@ def apply_patch(project: Project, patch: dict[str, Any], *, dry_run: bool = Fals
             ensure_writable(entity["layer_id"])
             updated.scene["entities"].append(entity)
             changes.append(f"add {entity['kind']} {entity['id']}")
+        elif cmd == "set_grid":
+            change = op.get("settings")
+            if not isinstance(change, dict) or not change or set(change) - {"enabled", "visible", "snap", "spacing"}:
+                raise ValueError("grid settings must contain supported fields")
+            grid = grid_settings(updated)
+            grid.update(change)
+            updated.scene["grid"] = grid
+            changes.append("update grid")
+        elif cmd in ("set_segment_scale", "set_segment_bend", "set_line_bend"):
+            e = get_entity(updated, _id(op.get("id")))
+            ensure_writable(e["layer_id"])
+            value = _number(op.get("value"), cmd)
+            if cmd == "set_line_bend":
+                if e["kind"] != "line" or not -1 <= value <= 1:
+                    raise ValueError("line bend requires a line and -1..1 value")
+                e["bend"] = value
+            else:
+                if e["kind"] != "stickman":
+                    raise ValueError("segment editing requires a stickman")
+                joint = op.get("joint")
+                if cmd == "set_segment_scale":
+                    set_segment_scale(e, joint, value)
+                else:
+                    set_segment_bend(e, joint, value)
+            changes.append(f"{cmd} {e['id']}")
         elif cmd == "set_color":
             e = get_entity(updated, _id(op.get("id")))
             ensure_writable(e["layer_id"])
