@@ -532,11 +532,30 @@ class MainWindow(QMainWindow):
             self.tool_actions[key] = action
         self.tool_actions["select"].setChecked(True)
         toolbar.addSeparator()
+        grid = grid_settings(self.project)
         self.grid_check = QCheckBox("Grid")
-        self.grid_check.stateChanged.connect(lambda _: self.canvas.redraw())
+        self.grid_check.setToolTip("Enable or disable the grid, preserving preferences")
+        self.grid_check.setChecked(grid["enabled"])
         toolbar.addWidget(self.grid_check)
-        self.snap_check = QCheckBox("Snap (10)")
+        self.grid_visible_check = QCheckBox("Show")
+        self.grid_visible_check.setChecked(grid["visible"])
+        self.grid_visible_check.setToolTip("Hide grid without changing snap settings")
+        toolbar.addWidget(self.grid_visible_check)
+        self.snap_check = QCheckBox("Snap")
+        self.snap_check.setChecked(grid["snap"])
+        self.snap_check.setToolTip("Snap points to grid spacing")
         toolbar.addWidget(self.snap_check)
+        toolbar.addWidget(QLabel(" Step "))
+        self.grid_step = QSpinBox()
+        self.grid_step.setObjectName("grid_spacing")
+        self.grid_step.setRange(1, 200)
+        self.grid_step.setSuffix(" px")
+        self.grid_step.setValue(grid["spacing"])
+        toolbar.addWidget(self.grid_step)
+        self.grid_check.toggled.connect(self.change_grid)
+        self.grid_visible_check.toggled.connect(self.change_grid)
+        self.snap_check.toggled.connect(self.change_grid)
+        self.grid_step.valueChanged.connect(self.change_grid)
         self.onion_check = QCheckBox("Onion skin")
         self.onion_check.setChecked(True)
         self.onion_check.stateChanged.connect(lambda _: self.canvas.redraw())
@@ -592,6 +611,24 @@ class MainWindow(QMainWindow):
         self.fill_head = QCheckBox("Fill head")
         self.fill_head.toggled.connect(self.change_head_fill)
         select_layout.addWidget(self.fill_head)
+        self.segment_box = QGroupBox("Selected segment")
+        segment_layout = QVBoxLayout(self.segment_box)
+        segment_layout.addWidget(QLabel("Visible length"))
+        self.segment_length = QDoubleSpinBox(self.segment_box)
+        self.segment_length.setRange(20, 250)
+        self.segment_length.setSingleStep(5)
+        self.segment_length.setSuffix(" %")
+        self.segment_length.valueChanged.connect(self.change_segment_length)
+        segment_layout.addWidget(self.segment_length)
+        segment_layout.addWidget(QLabel("Curve / bend"))
+        self.segment_bend_spin = QDoubleSpinBox(self.segment_box)
+        self.segment_bend_spin.setRange(-100, 100)
+        self.segment_bend_spin.setSingleStep(5)
+        self.segment_bend_spin.setSuffix(" %")
+        self.segment_bend_spin.valueChanged.connect(self.change_segment_bend)
+        segment_layout.addWidget(self.segment_bend_spin)
+        self.segment_box.setVisible(False)
+        select_layout.addWidget(self.segment_box)
         delete_button = QPushButton("Delete selected")
         delete_button.clicked.connect(self.delete_selected)
         select_layout.addWidget(delete_button)
@@ -923,6 +960,11 @@ class MainWindow(QMainWindow):
             action.triggered.connect(callback)
             file_menu.addAction(action)
         edit_menu = self.menuBar().addMenu("Edit")
+        self.escape_action = QAction("Return to Select / Move", self)
+        self.escape_action.setShortcut(QKeySequence("Esc"))
+        self.escape_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.escape_action.triggered.connect(self.escape_to_select)
+        edit_menu.addAction(self.escape_action)
         for title, callback, shortcut in [("Undo", self.undo, "Ctrl+Z"),
                                           ("Redo", self.redo, "Ctrl+Y"),
                                           ("Delete selected object", self.delete_selected, "Delete")]:
@@ -963,6 +1005,13 @@ class MainWindow(QMainWindow):
         current.pop("revision", None)
         old.pop("revision", None)
         return current != old
+
+    def escape_to_select(self):
+        """Exit element placement and return to editing in one keystroke."""
+        self.canvas.shape_start = self.canvas.shape_end = None
+        self.canvas.clear_placement_preview()
+        self.select_tool("select")
+        self.canvas.redraw()
 
     def select_tool(self, key):
         self.tool = key
@@ -1016,7 +1065,8 @@ class MainWindow(QMainWindow):
     def add_stickman(self, point):
         if not self.can_edit_layer("actors"):
             return
-        obj = make_stickman(*point, frame_index=self.frame)
+        obj = make_stickman(*point, frame_index=self.frame,
+                            rig_unit=grid_settings(self.project)["spacing"])
         def add_actor():
             self.project.scene["entities"].append(obj)
         self.mutate(add_actor)
@@ -1043,6 +1093,20 @@ class MainWindow(QMainWindow):
         if self._building:
             return
         self.frame = max(0, min(self.frame, self.project.duration - 1))
+        grid = grid_settings(self.project)
+        for checkbox, value in (
+            (self.grid_check, grid["enabled"]),
+            (self.grid_visible_check, grid["visible"]),
+            (self.snap_check, grid["snap"]),
+        ):
+            checkbox.blockSignals(True)
+            checkbox.setChecked(value)
+            checkbox.blockSignals(False)
+        self.grid_step.blockSignals(True)
+        self.grid_step.setValue(grid["spacing"])
+        self.grid_step.blockSignals(False)
+        self.grid_visible_check.setEnabled(grid["enabled"])
+        self.snap_check.setEnabled(grid["enabled"])
         # A frame-local selection cannot silently edit an object belonging to
         # another frame. Clear stale selection after insert, move or delete.
         if self.selected_id and not any(
@@ -1073,6 +1137,42 @@ class MainWindow(QMainWindow):
         self.update_canvas_coordinates(self._cursor_world)
         self.refresh_title()
 
+    def change_grid(self, *_):
+        if self._building:
+            return
+        new = {"enabled": self.grid_check.isChecked(),
+               "visible": self.grid_visible_check.isChecked(),
+               "snap": self.snap_check.isChecked(),
+               "spacing": self.grid_step.value()}
+        if grid_settings(self.project) != new:
+            self.mutate(lambda: self.project.scene.__setitem__("grid", new))
+        else:
+            self.canvas.redraw()
+
+    def change_segment_length(self, value):
+        if not self.selected_id or not self.selected_joint:
+            return
+        joint = self.selected_joint
+        entity = get_entity(self.project, self.selected_id)
+        if entity["kind"] != "stickman":
+            return
+        factor = value / 100
+        if abs(entity.get("segment_scales", {}).get(joint, 1.0) - factor) > 1e-6:
+            self.mutate(lambda: set_segment_scale(entity, joint, factor))
+
+    def change_segment_bend(self, value):
+        if not self.selected_id:
+            return
+        entity = get_entity(self.project, self.selected_id)
+        new = value / 100
+        if entity["kind"] == "stickman" and self.selected_joint:
+            joint = self.selected_joint
+            if abs(entity.get("segment_bends", {}).get(joint, 0) - new) > 1e-6:
+                self.mutate(lambda: set_segment_bend(entity, joint, new))
+        elif entity["kind"] == "line":
+            if abs(entity.get("bend", 0) - new) > 1e-6:
+                self.mutate(lambda: entity.__setitem__("bend", new))
+
     def refresh_inspector(self):
         try:
             e = get_entity(self.project, self.selected_id) if self.selected_id else None
@@ -1088,6 +1188,21 @@ class MainWindow(QMainWindow):
         self.fill_head.setVisible(bool(e and e["kind"] == "stickman"))
         self.fill_head.setChecked(bool(e and e.get("head_filled", False)))
         self.fill_head.blockSignals(False)
+        joint = self.selected_joint
+        show_segment = bool(e and (
+            (e["kind"] == "stickman" and joint and joint != "pelvis" and
+             math.hypot(*segment_offset(e, joint)) > 0.001) or
+            e["kind"] == "line"))
+        self.segment_box.setVisible(show_segment)
+        if show_segment:
+            values = (e.get("segment_scales", {}).get(joint, 1.0) * 100,
+                      e.get("segment_bends", {}).get(joint, 0) * 100) if e["kind"] == "stickman" else (100, e.get("bend", 0) * 100)
+            self.segment_length.setEnabled(e["kind"] == "stickman")
+            for control, value in ((self.segment_length, values[0]),
+                                   (self.segment_bend_spin, values[1])):
+                control.blockSignals(True)
+                control.setValue(value)
+                control.blockSignals(False)
 
     def refresh_layers(self):
         selected_item = self.layers_list.currentItem()
