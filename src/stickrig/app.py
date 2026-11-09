@@ -549,7 +549,7 @@ class Canvas(QGraphicsView):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, path: str | None = None):
+    def __init__(self, path: str | None = None, *, settings: QSettings | None = None):
         super().__init__()
         self.project = Project()
         self.history = History()
@@ -566,7 +566,9 @@ class MainWindow(QMainWindow):
         self.resize(1380, 850)
         # Application-level window state is intentionally independent of each
         # project's QMainWindow dock layout (which lives in the project JSON).
-        self._window_settings = QSettings("RawsTourix", "StickRig Studio")
+        self._window_settings = (
+            settings if settings is not None else QSettings("RawsTourix", "StickRig Studio")
+        )
         self._restore_maximized = False
         self._docks = []
         self._restoring_layout = False

@@ -12,16 +12,12 @@ from PySide6.QtWidgets import QApplication
 
 
 def make_window(monkeypatch, tmp_path):
-    import stickrig.app as module
+    from stickrig.app import MainWindow
 
-    # Isolate real-user application settings from headless tests.
+    # Real QSettings with isolated backing file, no monkeypatch of Qt classes.
     settings_file = str(tmp_path / "settings.ini")
-    monkeypatch.setattr(
-        module, "QSettings",
-        lambda organization, application: QSettings(settings_file, QSettings.Format.IniFormat),
-    )
     app = QApplication.instance() or QApplication([])
-    window = module.MainWindow()
+    window = MainWindow(settings=QSettings(settings_file, QSettings.Format.IniFormat))
     window.show()
     app.processEvents()
     return app, window, settings_file
@@ -54,7 +50,7 @@ def test_window_geometry_and_maximize_survive_clean_restart(monkeypatch, tmp_pat
     assert not settings.value("window/geometry").isEmpty()
 
     from stickrig.app import MainWindow
-    second = MainWindow()
+    second = MainWindow(settings=QSettings(location, QSettings.Format.IniFormat))
     try:
         second.showMaximized() if second._restore_maximized else second.show()
         app.processEvents()
@@ -77,7 +73,8 @@ def test_normal_window_geometry_and_preference_are_persisted(monkeypatch, tmp_pa
         close_unmodified(window)
     settings = QSettings(location, QSettings.Format.IniFormat)
     assert settings.value("window/maximized", True, type=bool) is False
-    next_window = __import__("stickrig.app", fromlist=["MainWindow"]).MainWindow()
+    from stickrig.app import MainWindow
+    next_window = MainWindow(settings=QSettings(location, QSettings.Format.IniFormat))
     try:
         assert not next_window._restore_maximized
         screen = app.primaryScreen().availableGeometry()
