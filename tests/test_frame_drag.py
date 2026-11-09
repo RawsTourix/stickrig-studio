@@ -240,3 +240,33 @@ def test_deferred_drop_mutates_only_after_native_drag_completes():
                          "pose.elbow_l", f) for f in range(4)] == before
     finally:
         _close(w)
+
+
+def test_insertion_indicator_eases_to_new_slot_instead_of_teleporting():
+    from PySide6.QtCore import QPoint
+    w = _window_with_frames(6)
+    try:
+        strip = w.frames_list
+        strip._drag_active = True
+        strip._active_source = 0
+        strip._drop_target = 0
+        strip._drop_slot = 1
+        old_y = float(strip._slot_line_y())
+        strip._line_y = old_y
+        strip._line_target = old_y
+        next_row = strip.visualItemRect(strip.item(1))
+        strip._update_target(QPoint(next_row.center().x(), next_row.center().y() + 16))
+        target_y = float(strip._slot_line_y())
+        assert strip._drop_slot == 2
+        assert target_y > old_y
+        # Marker follows a continuous curve rather than jumping to target.
+        assert strip._insertion_line_y() == old_y
+        strip._step_gap(dt_ms=16)
+        midway = strip._insertion_line_y()
+        assert old_y < midway < target_y
+        for _ in range(28):
+            strip._step_gap(dt_ms=16)
+        assert abs(strip._insertion_line_y() - target_y) < 1
+        assert not strip._gap_timer.isActive()
+    finally:
+        _close(w)
