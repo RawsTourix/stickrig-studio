@@ -194,3 +194,42 @@ def test_ai_visibility_changes_are_atomic():
             "operations": [{"op": "set_entity_visibility",
                             "id": "hero", "frame": 0, "visible": "yes"}],
         })
+
+
+def test_ai_created_items_are_frame_local_by_default():
+    from stickrig.render import visible_entities
+    p = Project()
+    p.scene["duration_frames"] = 3
+    edited, _ = apply_patch(p, {"expected_revision": 0, "operations": [
+        {"op": "add_shape", "kind": "line", "id": "stroke",
+         "a": [20, 20], "b": [120, 20], "frame": 1},
+        {"op": "add_stickman", "id": "hero", "position": [140, 90], "frame": 2},
+    ]})
+    assert list(visible_entities(edited, 0)) == []
+    assert [e["id"] for e in visible_entities(edited, 1)] == ["stroke"]
+    assert [e["id"] for e in visible_entities(edited, 2)] == ["hero"]
+    assert edited.scene["entities"][0]["frame_index"] == 1
+    assert edited.scene["entities"][1]["frame_index"] == 2
+    assert p.scene["entities"] == []
+
+
+def test_ai_explicit_persistent_asset_and_bad_scope_are_validated():
+    from stickrig.render import visible_entities
+    p = Project()
+    p.scene["duration_frames"] = 2
+    edited, _ = apply_patch(p, {"expected_revision": 0, "operations": [
+        {"op": "add_shape", "kind": "line", "id": "persistent",
+         "a": [0, 20], "b": [120, 20], "persistent": True,
+         "layer_id": "background"},
+    ]})
+    assert ["persistent"] == [e["id"] for e in visible_entities(edited, 0)]
+    assert ["persistent"] == [e["id"] for e in visible_entities(edited, 1)]
+    with pytest.raises(ValueError, match="frame_index"):
+        apply_patch(p, {"expected_revision": 0, "operations": [
+            {"op": "add_shape", "kind": "line", "a": [0, 0], "b": [20, 20],
+             "frame": 3},
+        ]})
+    with pytest.raises(ValueError, match="persistent"):
+        apply_patch(p, {"expected_revision": 0, "operations": [
+            {"op": "add_stickman", "position": [60, 50], "persistent": 1},
+        ]})

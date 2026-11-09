@@ -294,3 +294,44 @@ def test_frame_card_layout_and_bottom_actions():
         window.capture_workspace(force=True)
         window.saved_snapshot = window.project.to_dict()
         window.close()
+
+
+def test_gui_shapes_and_characters_are_frame_local_and_blank_is_blank(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    from stickrig.render import visible_entities
+    from stickrig.model import load_project
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        w.add_shape("line", (15, 15), (50, 15))
+        assert w.project.scene["entities"][0]["layer_id"] == "actors"
+        assert [e["kind"] for e in visible_entities(w.project, 0)] == ["line"]
+
+        w.frame_plus.click()
+        assert w.frame == 1
+        assert list(visible_entities(w.project, 1)) == []
+        assert w.selected_id is None
+
+        w.add_shape("circle", (100, 50), (130, 80))
+        assert [e["kind"] for e in visible_entities(w.project, 1)] == ["circle"]
+        w.frame_plus.click()
+        assert w.frame == 2
+        assert list(visible_entities(w.project, 2)) == []
+
+        w.add_stickman((180, 120))
+        assert [e["kind"] for e in visible_entities(w.project, 2)] == ["stickman"]
+        assert [e["kind"] for e in visible_entities(w.project, 1)] == ["circle"]
+        assert [e["kind"] for e in visible_entities(w.project, 0)] == ["line"]
+
+        path = tmp_path / "user-scenario.json"
+        w.path = path
+        assert w.save_file()
+        loaded = load_project(path)
+        assert [[e["kind"] for e in visible_entities(loaded, f)]
+                for f in range(3)] == [["line"], ["circle"], ["stickman"]]
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
