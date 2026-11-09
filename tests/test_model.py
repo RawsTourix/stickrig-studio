@@ -483,3 +483,22 @@ def test_blank_frame_after_legacy_global_shape_is_truly_empty():
     assert list(visible_entities(p, 1)) == []
     assert [e["id"] for e in visible_entities(p, 2)] == ["legacy"]
     p.validate()
+
+
+def test_duplicate_frame_bakes_stickman_pose_into_independent_actor():
+    from stickrig.render import visible_entities
+    p = Project()
+    original = make_stickman(120, 140, entity_id="source", frame_index=0)
+    p.scene["entities"].append(original)
+    set_key(p, "source", "pose.elbow_l", 0, 37)
+    set_key(p, "source", "position", 0, [200, 160])
+    assert insert_frame(p, 0) == 1
+    clone = next(e for e in visible_entities(p, 1))
+    assert clone["id"] != original["id"]
+    assert value_at(p, clone, "pose.elbow_l", 1) == 37
+    assert value_at(p, clone, "position", 1) == [200.0, 160.0]
+    set_key(p, clone["id"], "pose.elbow_l", 1, -25)
+    assert value_at(p, original, "pose.elbow_l", 0) == 37
+    assert [e["id"] for e in visible_entities(p, 0)] == ["source"]
+    assert [e["id"] for e in visible_entities(p, 1)] == [clone["id"]]
+    p.validate()

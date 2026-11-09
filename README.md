@@ -132,8 +132,9 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [14 — GraphicsGale workspace](docs/14-graphicsgale-workspace-v0.4.md) | Dockable editor, blank frame behavior and UI layout |
 | [15 — Animated frame drag](docs/15-animated-frames-drag-v0.4.md) | Drag ghost, moving neighbors, insertion marker, auto-scroll and snap |
 | [16 — Drag smoothing](docs/16-smooth-frame-drag-v0.4.1.md) | Retargetable animation, anti-jitter insertion and scroll smoothing |
+| [17 — Independent frame content](docs/17-frame-local-content-v0.4.2.md) | Per-frame objects, empty +, duplicate semantics and drag threshold |
 
-See [frame-local content and drag thresholds](docs/17-frame-local-content-v0.4.2.md) for v0.4.2's behavior and legacy-file compatibility.\n\n## Licensing and attribution
+## Licensing and attribution
 
 No software license has yet been selected by the repository owner. References to historical animations and editors are used only to explain the product concept; no third-party video, music or protected assets are included.
 
