@@ -215,3 +215,26 @@ def test_graphicsgale_style_docks_and_blank_frame_button():
         w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
+
+
+def test_playback_and_elements_can_swap_vertical_dock_order():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        w.show()
+        app.processEvents()
+        assert w.playback_dock.geometry().center().y() < w.library_dock.geometry().center().y()
+        w.splitDockWidget(w.library_dock, w.playback_dock, Qt.Orientation.Vertical)
+        app.processEvents()
+        assert w.playback_dock.geometry().center().y() > w.library_dock.geometry().center().y()
+        w.splitDockWidget(w.playback_dock, w.library_dock, Qt.Orientation.Vertical)
+        app.processEvents()
+        assert w.playback_dock.geometry().center().y() < w.library_dock.geometry().center().y()
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
