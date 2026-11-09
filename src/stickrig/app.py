@@ -977,6 +977,14 @@ class MainWindow(QMainWindow):
         if self._building:
             return
         self.frame = max(0, min(self.frame, self.project.duration - 1))
+        # A frame-local selection cannot silently edit an object belonging to
+        # another frame. Clear stale selection after insert, move or delete.
+        if self.selected_id and not any(
+            e["id"] == self.selected_id
+            for e in visible_entities(self.project, self.frame)
+        ):
+            self.selected_id = self.selected_joint = None
+            self.refresh_inspector()
         self.frame_spin.blockSignals(True)
         self.frame_spin.setMaximum(self.project.duration)
         self.frame_spin.setValue(self.frame + 1)
