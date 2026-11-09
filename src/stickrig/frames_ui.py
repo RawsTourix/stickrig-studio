@@ -67,9 +67,9 @@ class FrameStrip(QListWidget):
         self.editor = editor
         self.setItemDelegate(FrameDelegate(self))
         self.setAcceptDrops(True)
-        self.setDragEnabled(True)
+        self.setDragEnabled(False)  # Only the dedicated handle may start a drag.
         self.setDropIndicatorShown(True)
-        self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
+        self.setDragDropMode(QListWidget.DragDropMode.DropOnly)
         self._drag_source = None
         self._drag_origin = QPoint()
         self.setMouseTracking(True)
