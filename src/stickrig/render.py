@@ -7,16 +7,16 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .model import Project, RIG_OFFSETS, joints_at, visible_frame_indices
+from .model import Project, RIG_OFFSETS, joints_at, visible_frame_indices, value_at
 
 
-def visible_entities(project: Project):
+def visible_entities(project: Project, frame: int | None = None):
     layers = {layer["id"]: layer for layer in project.scene["layers"]}
     for layer in project.scene["layers"]:
         if not layer["visible"]:
             continue
         for entity in project.scene["entities"]:
-            if entity["layer_id"] == layer["id"]:
+            if entity["layer_id"] == layer["id"] and (frame is None or value_at(project, entity, "visible", frame)):
                 yield entity
 
 
@@ -54,7 +54,7 @@ def render_image(project: Project, frame: int = 0, *, antialias: int = 2,
         return ((xy[0] - cx) * zoom_x + w * scale / 2,
                 (xy[1] - cy) * zoom_y + h * scale / 2)
 
-    for e in visible_entities(project):
+    for e in visible_entities(project, frame):
         stroke = max(1, round(e["stroke_width"] * zoom))
         color = e["color"]
         kind = e["kind"]
