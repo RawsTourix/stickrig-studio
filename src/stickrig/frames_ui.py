@@ -233,6 +233,7 @@ class FrameStrip(QListWidget):
         card = QPixmap(item_rect.size())
         card.fill(Qt.GlobalColor.transparent)
         painter = QPainter(card)
+        painter.setOpacity(0.82)
         option = QStyleOptionViewItem()
         option.rect = QRect(QPoint(), item_rect.size())
         option.state = QStyle.StateFlag.State_Selected
@@ -425,10 +426,11 @@ class FrameStrip(QListWidget):
         painter.drawEllipse(QRectF(8, y - 4, 8, 8))
         painter.end()
 
-    def _auto_scroll(self):
+    def _auto_scroll(self, local: QPoint | None = None):
         if not self._drag_active:
             return
-        local = self.viewport().mapFromGlobal(QCursor.pos())
+        if local is None:
+            local = self.viewport().mapFromGlobal(QCursor.pos())
         rect = self.viewport().rect()
         if not (-45 <= local.x() <= rect.width() + 45):
             return
