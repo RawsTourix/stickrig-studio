@@ -28,7 +28,8 @@ jobs:
             test_thumbnails_for_11_to_25_are_populated_after_scrolling \
             test_duplicating_last_of_24_frames_keeps_selection_and_scroll_together \
             test_pick_closest_of_two_ankles_at_70_percent_zoom \
-            test_shift_resize_is_grid_independent_and_rest_length_can_be_reset; do
+            test_shift_resize_is_grid_independent_and_rest_length_can_be_reset \
+            test_double_click_empty_area_or_line_does_not_reset_other_limbs; do
             timeout 120s python -X faulthandler -m pytest -vv "tests/test_long_frame_workflow.py::$test_name" || status=1
           done
           exit "$status"
