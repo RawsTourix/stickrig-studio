@@ -1045,7 +1045,7 @@ class MainWindow(QMainWindow):
         self.canvas.update_placement_preview()
         for name, action in self.tool_actions.items():
             action.setChecked(key == name)
-        self.statusBar().showMessage({"select": "Drag a joint to pose it; drag a bone to move the whole character.",
+        self.statusBar().showMessage({"select": "Drag joint to pose; Shift+joint to shorten; Alt+bone to bend; Esc exits placement.",
                                       "stickman": "Click anywhere to add a stickman.",
                                       "line": "Drag to draw a line.", "rectangle": "Drag to draw a rectangle.",
                                       "circle": "Drag to draw an ellipse."}[key])
@@ -1536,9 +1536,13 @@ class MainWindow(QMainWindow):
             self.toggle_play()
 
     def about(self):
-        QMessageBox.information(self, "StickRig Studio 0.1",
-                                "StickRig Studio 0.1 — prototype\n\n"
-                                "Select/Move: drag a joint to pose, drag a bone to move.\n"
+        QMessageBox.information(self, "StickRig Studio 0.5",
+                                "StickRig Studio 0.5 — prototype\n\n"
+                                "Esc: leave placement and return to Select / Move.\n"
+                                "Drag joint to pose; Shift+drag joint changes visible limb length.\n"
+                                "Alt+drag a bone bends it; Inspector edits length and curvature.\n"
+                                "Drag line endpoints to rotate/shorten a staff; Alt+drag line to curve.\n"
+                                "Grid / Show / Snap / Step: separate scene-pixel grid controls.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
                                 "Frames: + adds blank frame; Ctrl+D duplicates pose; right-click for more.\n"
                                 "Playback is a movable bottom dock above Elements.\n"
