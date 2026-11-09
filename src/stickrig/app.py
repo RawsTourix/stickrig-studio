@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from .model import (History, Project, RIG_OFFSETS, angle_for_drag, delete_frame, disk_project_changed,
-                    get_entity, get_layer, insert_frame, joints_at, load_project,
+                    get_entity, get_layer, insert_frame, insert_blank_frame,
+                    joints_at, key_new_actor_visibility, load_project,
                     make_shape, make_stickman, save_project, set_key, value_at)
 from .render import export_mp4, render_image, visible_entities
 from .frames_ui import FrameStrip
@@ -163,6 +164,8 @@ class Canvas(QGraphicsView):
             self.reposition_zoom_hud()
 
     def reposition_zoom_hud(self):
+        if self.zoom_hud.parentWidget() is not self.viewport():
+            return
         self.zoom_hud.adjustSize()
         self.zoom_hud.move(max(6, self.viewport().width() - self.zoom_hud.width() - 12),
                            max(6, self.viewport().height() - self.zoom_hud.height() - 12))
@@ -199,6 +202,7 @@ class Canvas(QGraphicsView):
             self._preview_collect = False
 
     def leaveEvent(self, event):
+        self.editor.update_canvas_coordinates(None)
         self._hover_position = None
         self.clear_placement_preview()
         super().leaveEvent(event)
@@ -278,10 +282,10 @@ class Canvas(QGraphicsView):
             for gy in range(start_y, math.ceil((top + height) / grid) * grid + 1, grid):
                 self._line((left, gy), (left + width, gy), "#e8ecf2", 0.8, z=-190)
         if self.editor.onion_check.isChecked() and self.editor.frame > 0 and not self.editor.playing:
-            for e in visible_entities(project):
+            for e in visible_entities(project, self.editor.frame - 1):
                 if e["kind"] == "stickman":
                     self._render_entity(e, self.editor.frame - 1, z=-10, opacity=0.32, ghost=True)
-        for index, e in enumerate(visible_entities(project)):
+        for index, e in enumerate(visible_entities(project, self.editor.frame)):
             self._render_entity(e, self.editor.frame, z=index)
         if self.shape_start and self.shape_end:
             kind = self.editor.tool
@@ -292,7 +296,7 @@ class Canvas(QGraphicsView):
 
     def _pick(self, point: tuple[float, float]):
         threshold = 13 / max(self.transform().m11(), 0.05)
-        for e in reversed(list(visible_entities(self.editor.project))):
+        for e in reversed(list(visible_entities(self.editor.project, self.editor.frame))):
             if get_layer(self.editor.project, e["layer_id"])["locked"]:
                 continue
             if e["kind"] == "stickman":
@@ -351,6 +355,7 @@ class Canvas(QGraphicsView):
 
     def mouseMoveEvent(self, event):
         point = self.snap(self.to_world(event))
+        self.editor.update_canvas_coordinates(point)
         if self.panning and self.pan_start is not None:
             current = event.position().toPoint()
             delta = current - self.pan_start
@@ -431,6 +436,7 @@ class MainWindow(QMainWindow):
         self._thumb_epoch = 0
         self._thumb_pending = False
         self._thumb_cache = OrderedDict()
+        self._cursor_world = None
         self._building = True
         self.build_ui()
         self._building = False
@@ -445,6 +451,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Choose Stickman, then click the canvas. Use Select to drag joints.")
         self._build_menus()
+        self.setDockNestingEnabled(True)
         toolbar = QToolBar("Tools", self)
         toolbar.setObjectName("drawing_toolbar")
         toolbar.setMovable(True)
@@ -474,7 +481,36 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(camera_button)
 
         self.canvas = Canvas(self)
-        self.setCentralWidget(self.canvas)
+        # The canvas has a separate, thin information strip. It is a permanent
+        # part of the central editor, not a movable dock or an overlay.
+        center = QWidget(self)
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+        center_layout.addWidget(self.canvas, 1)
+        self.canvas_info = QFrame(center)
+        self.canvas_info.setObjectName("canvas_info_bar")
+        self.canvas_info.setStyleSheet(
+            "QFrame#canvas_info_bar {background: #f6f8fa; "
+            "border-top: 1px solid #c2cbd4;} "
+            "QLabel {color: #364554; padding: 0 4px;}"
+        )
+        info_layout = QHBoxLayout(self.canvas_info)
+        info_layout.setContentsMargins(8, 2, 8, 2)
+        info_layout.setSpacing(10)
+        self.cursor_coords_label = QLabel("Cursor: —")
+        self.selection_coords_label = QLabel("Selected: —")
+        info_layout.addWidget(self.cursor_coords_label)
+        info_layout.addWidget(self.selection_coords_label)
+        info_layout.addStretch(1)
+        self.canvas.zoom_hud.setParent(self.canvas_info)
+        self.canvas.zoom_hud.setStyleSheet(
+            "#viewportZoomHud {background: transparent; border: 0;}"
+        )
+        info_layout.addWidget(self.canvas.zoom_hud)
+        self.canvas.zoom_hud.show()
+        center_layout.addWidget(self.canvas_info)
+        self.setCentralWidget(center)
         inspector = QWidget()
         i_layout = QVBoxLayout(inspector)
         self.inspector_dock = self.make_dock("Inspector", "inspector_dock",
@@ -539,44 +575,61 @@ class MainWindow(QMainWindow):
             lambda _: self.schedule_thumbnails()
         )
         frame_layout.addWidget(self.frames_list, 1)
+        # A single plus action creates a blank animation frame. Duplication is
+        # available on the frame's quick-action buttons and context menu.
+        self.frame_plus = QToolButton(frames)
+        self.frame_plus.setObjectName("frame_add_blank")
+        self.frame_plus.setText("+")
+        self.frame_plus.setToolTip("Add a blank frame after the current frame")
+        self.frame_plus.setFixedSize(32, 28)
+        self.frame_plus.clicked.connect(self.add_blank_frame)
         frame_ops = QHBoxLayout()
-        for label, handler in (("+ Copy next", self.add_frame), ("Delete", self.remove_frame)):
-            button = QPushButton(label)
-            button.clicked.connect(handler)
-            frame_ops.addWidget(button)
+        frame_ops.setContentsMargins(0, 0, 0, 0)
+        frame_ops.addWidget(self.frame_plus)
+        frame_ops.addStretch(1)
         frame_layout.addLayout(frame_ops)
         self.frames_dock = self.make_dock(
             "Frames", "frames_dock", frames, Qt.DockWidgetArea.LeftDockWidgetArea
         )
 
-        # A separate compact playback strip, independent of the Frames browser.
-        playback = QToolBar("Playback", self)
-        playback.setObjectName("playback_toolbar")
-        playback.setMovable(True)
-        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, playback)
+        # QToolBar cannot be nested vertically with other bottom toolbars.
+        # A movable QDockWidget *can*, so Playback is a true dock above Elements.
+        playback_body = QFrame(self)
+        playback_body.setObjectName("playback_toolbar")
+        playback_body.setFixedHeight(40)
+        playback_row = QHBoxLayout(playback_body)
+        playback_row.setContentsMargins(6, 3, 6, 3)
+        playback_row.setSpacing(4)
+        playback_row.addStretch(1)
         for label, handler in (("|◀", self.first_frame), ("◀", self.prev_frame),
                                ("▶ Play", self.toggle_play), ("▶|", self.next_frame)):
             button = QPushButton(label)
             button.setMaximumHeight(28)
             button.clicked.connect(handler)
-            playback.addWidget(button)
+            playback_row.addWidget(button)
             if label == "▶ Play":
                 self.play_btn = button
-        playback.addSeparator()
-        playback.addWidget(QLabel("Frame "))
+        playback_row.addSpacing(12)
+        playback_row.addWidget(QLabel("Frame "))
         self.frame_spin = QSpinBox()
         self.frame_spin.setRange(1, self.project.duration)
         self.frame_spin.valueChanged.connect(lambda value: self.set_frame(value - 1))
-        playback.addWidget(self.frame_spin)
+        playback_row.addWidget(self.frame_spin)
         self.frame_total = QLabel("/ 1")
-        playback.addWidget(self.frame_total)
-        playback.addSeparator()
-        playback.addWidget(QLabel(" FPS "))
+        playback_row.addWidget(self.frame_total)
+        playback_row.addSpacing(12)
+        playback_row.addWidget(QLabel("FPS "))
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 60)
         self.fps_spin.valueChanged.connect(self.change_fps)
-        playback.addWidget(self.fps_spin)
-        self.playback_toolbar = playback
+        playback_row.addWidget(self.fps_spin)
+        playback_row.addStretch(1)
+        self.playback_toolbar = playback_body  # Legacy test-friendly reference.
+        self.playback_dock = self.make_dock(
+            "Playback", "playback_dock", playback_body,
+            Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.playback_dock.setMaximumHeight(92)
 
         library = QWidget()
         library_layout = QVBoxLayout(library)
@@ -602,6 +655,11 @@ class MainWindow(QMainWindow):
         library_layout.addWidget(self.library_list)
         self.library_dock = self.make_dock(
             "Elements", "library_dock", library, Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        # Both widgets live in the same nested bottom dock area, one above the
+        # other. Either can be moved, floated or re-stacked by its title bar.
+        self.splitDockWidget(
+            self.playback_dock, self.library_dock, Qt.Orientation.Vertical
         )
 
         self.tabifyDockWidget(self.inspector_dock, self.layers_dock)
@@ -855,6 +913,34 @@ class MainWindow(QMainWindow):
         self.selected_id = entity_id
         self.selected_joint = joint
         self.refresh_inspector()
+        self.update_canvas_coordinates(self._cursor_world)
+
+    def update_canvas_coordinates(self, point):
+        """Inspector-style coordinates in scene units, independent of viewport zoom."""
+        self._cursor_world = point
+        if point is None:
+            self.cursor_coords_label.setText("Cursor: —")
+        else:
+            self.cursor_coords_label.setText(f"Cursor  X: {point[0]:.1f}  Y: {point[1]:.1f}")
+        if not self.selected_id:
+            self.selection_coords_label.setText("Selected: —")
+            return
+        try:
+            e = get_entity(self.project, self.selected_id)
+            if e["kind"] == "stickman":
+                if self.selected_joint:
+                    p = joints_at(self.project, e, self.frame)[0][self.selected_joint]
+                else:
+                    p = value_at(self.project, e, "position", self.frame)
+            else:
+                p = [(e["a"][0] + e["b"][0]) / 2,
+                     (e["a"][1] + e["b"][1]) / 2]
+            name = self.selected_joint or e["kind"]
+            self.selection_coords_label.setText(
+                f"Selected ({name})  X: {p[0]:.1f}  Y: {p[1]:.1f}"
+            )
+        except (ValueError, KeyError):
+            self.selection_coords_label.setText("Selected: —")
 
     def can_edit_layer(self, layer_id):
         if get_layer(self.project, layer_id)["locked"]:
@@ -866,7 +952,10 @@ class MainWindow(QMainWindow):
         if not self.can_edit_layer("actors"):
             return
         obj = make_stickman(*point)
-        self.mutate(lambda: self.project.scene["entities"].append(obj))
+        def add_actor():
+            self.project.scene["entities"].append(obj)
+            key_new_actor_visibility(self.project, obj["id"], self.frame)
+        self.mutate(add_actor)
         self.select_entity(obj["id"])
 
     def add_shape(self, kind, a, b):
@@ -907,6 +996,7 @@ class MainWindow(QMainWindow):
             self.refresh_layers()
         self.refresh_frames(content_changed=content_changed)
         self.canvas.redraw()
+        self.update_canvas_coordinates(self._cursor_world)
         self.refresh_title()
 
     def refresh_inspector(self):
@@ -1015,7 +1105,19 @@ class MainWindow(QMainWindow):
         self.refresh(content_changed=False)
 
     def add_frame(self):
+        """Ctrl+D keeps the current pose (explicit duplicate)."""
         self.insert_frame_after(self.frame)
+
+    def add_blank_frame(self):
+        self.insert_blank_frame_after(self.frame)
+
+    def insert_blank_frame_after(self, source):
+        self.stop_playback()
+        self.mutate(lambda: setattr(self, "frame",
+                                    insert_blank_frame(self.project, source)))
+
+    def append_blank_frame(self):
+        self.insert_blank_frame_after(self.project.duration - 1)
 
     def insert_frame_after(self, source):
         self.stop_playback()
@@ -1216,13 +1318,13 @@ class MainWindow(QMainWindow):
                                 "StickRig Studio 0.1 — prototype\n\n"
                                 "Select/Move: drag a joint to pose, drag a bone to move.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
-                                "Frames: right-click for actions; drag by ≡ to reorder; hide from playback.\n"
-                                "Playback controls are on the lower toolbar.\n"
+                                "Frames: + adds blank frame; Ctrl+D duplicates pose; right-click for more.\n"
+                                "Playback is a movable bottom dock above Elements.\n"
                                 "Elements follow the pointer as a transparent placement preview.\n"
                                 "Camera: static X/Y/zoom, Frame camera (Ctrl+0).\n"
                                 "Undo/Redo: Ctrl+Z / Ctrl+Y. Save: Ctrl+S.\n"
                                 "Pan: touchpad swipe / wheel / middle mouse; adaptive sensitivity.\n"
-                                "Zoom: Ctrl+wheel, or bottom-right viewport zoom controls.\n"
+                                "Zoom and coordinates: strip below the canvas.\n"
                                 "Docks: drag, resize, close, reopen from View menu.\n\n"
                                 "Project is editable JSON; experimental AI patching via stickrig-cli.")
 
