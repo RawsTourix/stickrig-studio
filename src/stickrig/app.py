@@ -50,7 +50,7 @@ class Canvas(QGraphicsView):
         self.graphics.setSceneRect(-2000, -2000, 6000, 6000)
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setBackgroundBrush(QColor("#dfe4eb"))
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setMouseTracking(True)
