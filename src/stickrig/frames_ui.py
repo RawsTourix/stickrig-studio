@@ -192,6 +192,8 @@ class FrameStrip(QListWidget):
         self._active_source = -1
         self._drop_slot = None
         self._drop_target = None
+        self._line_y: float | None = None
+        self._line_target: float | None = None
         self._gap_offsets: dict[int, float] = {}
         self._gap_to: dict[int, float] = {}
         self._slot_hysteresis_px = 8
@@ -307,6 +309,8 @@ class FrameStrip(QListWidget):
         self._active_source = source
         self._drop_target = source
         self._drop_slot = source
+        self._line_y = None
+        self._line_target = None
         self._gap_timer.stop()
         self._gap_offsets.clear()
         self._gap_to.clear()
@@ -334,6 +338,8 @@ class FrameStrip(QListWidget):
         self._active_source = -1
         self._drop_slot = None
         self._drop_target = None
+        self._line_y = None
+        self._line_target = None
         self._gap_offsets.clear()
         self._gap_to.clear()
         self._scroll_velocity = 0.0
@@ -381,6 +387,7 @@ class FrameStrip(QListWidget):
         self._gap_to = targets
         if immediate:
             self._gap_offsets = dict(targets)
+            self._line_y = self._line_target
             self._gap_timer.stop()
             self.viewport().update()
         elif not self._gap_timer.isActive():
@@ -401,7 +408,7 @@ class FrameStrip(QListWidget):
         if dt_ms is None:
             dt_ms = self._gap_clock.restart()
         dt = max(1.0, min(48.0, float(dt_ms)))
-        blend = 1.0 - math.exp(-dt / 62.0)
+        blend = 1.0 - math.exp(-dt / 50.0)
         rows = self._gap_offsets.keys() | self._gap_to.keys()
         offsets = {}
         moving = False
@@ -416,6 +423,15 @@ class FrameStrip(QListWidget):
             if abs(current) >= 0.45:
                 offsets[row] = current
         self._gap_offsets = offsets
+        if self._line_target is not None:
+            if self._line_y is None:
+                self._line_y = self._line_target
+            else:
+                self._line_y += (self._line_target - self._line_y) * blend
+                if abs(self._line_target - self._line_y) < 0.45:
+                    self._line_y = self._line_target
+                else:
+                    moving = True
         if not moving:
             self._gap_timer.stop()
         self.viewport().update()
@@ -459,16 +475,28 @@ class FrameStrip(QListWidget):
         changed = slot != self._drop_slot
         self._drop_slot = slot
         self._animate_gap(destination)
+        raw_line = self._slot_line_y()
+        if raw_line is not None:
+            self._line_target = float(raw_line)
+            if self._line_y is None:
+                self._line_y = self._line_target
+            elif (abs(self._line_target - self._line_y) > 0.45 and
+                  not self._gap_timer.isActive()):
+                self._gap_clock.start()
+                self._gap_timer.start()
         if changed:
             self.viewport().update()
 
-    def _insertion_line_y(self):
+    def _slot_line_y(self):
         slot = self._drop_slot
         if slot is None or not self.count():
             return None
         if slot < self.count():
             return self.visualItemRect(self.item(slot)).top() - self.spacing() // 2
         return self.visualItemRect(self.item(self.count() - 1)).bottom() + self.spacing() // 2
+
+    def _insertion_line_y(self):
+        return self._line_y if self._line_y is not None else self._slot_line_y()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -481,6 +509,7 @@ class FrameStrip(QListWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         pen = QPen(QColor("#8255d5"), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
+        y = round(y)
         painter.drawLine(14, y, max(15, self.viewport().width() - 14), y)
         painter.setBrush(QColor("#8255d5"))
         painter.setPen(Qt.PenStyle.NoPen)
@@ -547,6 +576,8 @@ class FrameStrip(QListWidget):
 
     def dragLeaveEvent(self, event):
         self._drop_slot = None
+        self._line_y = None
+        self._line_target = None
         self._animate_gap(self._active_source)
         self.viewport().update()
         event.accept()
