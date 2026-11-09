@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.4.2 prototype (independent frame content and stable drag thresholds).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.5 prototype (minimalist editable stickmen, frame-local objects and configurable grid).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -29,20 +29,20 @@ Alternatively run `stickrig` or `stickrig-cli` after installation. Video export 
 
 For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-## Controls in v0.4
+## Controls in v0.5
 
 | Tool | Action |
 | --- | --- |
-| `+ Stickman` | Click the canvas to add a basic stickman |
-| `Select / Move` | Drag a blue joint handle to pose a limb; drag a bone to move the whole figure |
-| `Line`, `Rectangle`, `Ellipse` | Click-drag to draw editable simple shapes |
+| `+ Stickman` | Click to place a minimalist stickman (one torso, bent arms and legs); dimensions start from the scene's grid step |
+| `Esc` | Immediately exit element placement and return to **Select / Move** |\n| `Select / Move` | Drag a joint to pose; **Shift+drag joint** changes apparent limb length; **Alt+drag bone** bends it; Inspector supports exact length/bend |
+| `Line`, `Rectangle`, `Ellipse` | Draw primitives; **drag line endpoints** to shorten/rotate props (e.g. staffs), **Alt+drag line** or Inspector to bend a line |
 | `+` under Frames | Insert a **completely empty** frame after the current one; do not inherit objects or a background |
 | Duplicate frame (`Ctrl+D` or copy button) | Create an **independent editable copy** of the current frame's stickmen and shapes |\n| `Delete frame` | Delete the current animation frame |
 | `Onion skin` | Show translucent pose from the previous frame (without ghosting static background) |
 | `▶ Play` | Preview animation with the selected FPS |
 | `Frame camera` (`Ctrl+0`) | Recenter the canvas view on the camera frame |
 | Two-finger touchpad swipe / wheel / middle mouse | Pan with zoom-dependent sensitivity: zoomed-in movement is more precise, zoomed-out movement travels faster. **Ctrl+wheel/scroll** zooms around cursor |
-| `Grid`, `Snap (10)` | Toggle viewport grid and 10-unit position snapping |
+| `Grid`, `Show`, `Snap`, `Step` | Master grid switch, independently show/hide grid and snap to it, set cell size (1–200 scene pixels); project setting, Undo/Redo |
 | Inspector, Layers, Camera | Independent dock panels. Drag title bars, resize, tabify, float or hide; reopen from **View** menu |
 | **Frames** sidebar | Right-click for actions; eye/duplicate/trash quick buttons at the bottom of each card. Drag from the **right dotted grip**: a translucent card follows the pointer, **only the crossed neighboring cards** slide aside after their center-point threshold, a purple insertion line marks the destination, and holding near an edge auto-scrolls. |
 | **Elements** panel | Select an element to see a translucent preview under the cursor before placing it in the scene |
@@ -52,7 +52,7 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | `Ctrl+S`, `Ctrl+Z`, `Ctrl+Y` | Save (including panel layout), undo, redo |
 | `←`, `→`, `Space`, `Ctrl+D` | Previous/next frame, play/pause, insert duplicate hold frame |
 
-**Performance:** only visible frame thumbnails are rasterized directly at 128-pixel width. A lightweight item delegate paints quick buttons without creating separate widgets per frame. During reordering, only visible rows participate in Qt animations with continuous 16ms retargeting and a smoothed insertion marker. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.
+**Performance:** the vector editing grid uses QPainter background rendering and allocates **no graphics item per grid line**. Only visible frame thumbnails are rasterized directly at 128-pixel width. A lightweight item delegate paints quick buttons without creating separate widgets per frame. During reordering, only visible rows participate in Qt animations with continuous 16ms retargeting and a smoothed insertion marker. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.
 
 **Frame content:** new stickmen and shapes belong only to the frame where they were created. They do **not** automatically become background objects or appear in adjacent frames. An explicit duplicate makes new object IDs; the + button makes a blank frame. For compatibility, older files with objects lacking `frame_index` retain their historical global/held behavior. This old information cannot be inferred safely: use a new project to verify the new default or explicitly clean up a legacy project. Onion skin and the translucent placement preview are editor overlays, not extra saved objects.
 
@@ -62,7 +62,7 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 
 Other capabilities: create/open/save structured `.stickrig.json`, silent MP4 export, PNG export, single-scene hold-keyframe animation and multiple independent characters.
 
-**Limitations:** only one scene; one basic rig; hold frames only (no interpolation/IK); static camera; shapes are not keyframable; no weapon asset editor, audio montage or live MCP server yet. These are documented future milestones, not implemented features. Layer visibility currently applies to both editor and export. Animation remains fully offline.
+**Limitations:** only one scene; two compatible silhouette styles (legacy + simple); hold frames only (no interpolation/IK); static camera; shapes are not keyframable; no weapon asset editor, audio montage or live MCP server yet. These are documented future milestones, not implemented features. Layer visibility currently applies to both editor and export. Animation remains fully offline.
 
 ## AI-assisted workflow — already testable without MCP
 
@@ -85,7 +85,7 @@ python -m stickrig.cli render new-project.stickrig.json --frame 0 --output previ
 python -m stickrig.cli export new-project.stickrig.json --output result.mp4
 ```
 
-Patch JSON is `{ "expected_revision": 0, "operations": [...] }`. Allowed operations: `add_stickman`, `add_shape`, `set_color`, `set_position`, `set_joint_angle`, `set_layer_visibility`, `set_camera`, `delete_entity`, `insert_frame`, `insert_blank_frame`, `delete_frame`, `move_frame`, `set_frame_hidden`. Frame structure operations are rejected if any layer is locked. Validation rejects unknown references, duplicate IDs, non-finite coordinates, out-of-range frames and changes to locked layers. Stale revisions are rejected and invalid batches leave the original intact. To update the source directly, add the explicit `--in-place` flag.
+Patch JSON is `{ "expected_revision": 0, "operations": [...] }`. Allowed operations: `add_stickman`, `add_shape`, `set_color`, `set_position`, `set_joint_angle`, `set_layer_visibility`, `set_camera`, `delete_entity`, `insert_frame`, `insert_blank_frame`, `delete_frame`, `move_frame`, `set_frame_hidden`, `set_grid`, `set_segment_scale`, `set_segment_bend`, `set_line_bend`. Frame structure operations are rejected if any layer is locked. Validation rejects unknown references, duplicate IDs, non-finite coordinates, out-of-range frames and changes to locked layers. Stale revisions are rejected and invalid batches leave the original intact. To update the source directly, add the explicit `--in-place` flag.
 
 New `add_stickman` and `add_shape` operations accept an optional zero-based `frame` (default 0); frame-local is the default. Explicit `persistent: true` is reserved for intentional global resources, with no automatic promotion of ordinary shapes to a background.\n\n**MCP status:** not implemented yet. CLI and JSON are the first integration layer; an MCP adapter can be built on the same functions after practical tests.
 
@@ -132,7 +132,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [14 — GraphicsGale workspace](docs/14-graphicsgale-workspace-v0.4.md) | Dockable editor, blank frame behavior and UI layout |
 | [15 — Animated frame drag](docs/15-animated-frames-drag-v0.4.md) | Drag ghost, moving neighbors, insertion marker, auto-scroll and snap |
 | [16 — Drag smoothing](docs/16-smooth-frame-drag-v0.4.1.md) | Retargetable animation, anti-jitter insertion and scroll smoothing |
-| [17 — Independent frame content](docs/17-frame-local-content-v0.4.2.md) | Per-frame objects, empty +, duplicate semantics and drag threshold |
+| [17 — Independent frame content](docs/17-frame-local-content-v0.4.2.md) | Per-frame objects, empty +, duplicate semantics and drag threshold |\n| [18 — Minimal stickman and grid](docs/18-simple-rig-grid-escape-v0.5.md) | Esc, minimal silhouette, bend/shorten bones, and adjustable vector grid |
 
 ## Licensing and attribution
 
