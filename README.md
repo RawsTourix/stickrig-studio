@@ -34,10 +34,12 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | Tool | Action |
 | --- | --- |
 | `+ Stickman` | Click to place a minimalist stickman (one torso, bent arms and legs); dimensions start from the scene's grid step |
-| `Esc` | Immediately exit element placement and return to **Select / Move** |\n| `Select / Move` | Drag a joint to pose; **Shift+drag joint** changes apparent limb length; **Alt+drag bone** bends it; Inspector supports exact length/bend |
+| `Esc` | Immediately exit element placement and return to **Select / Move** |
+| `Select / Move` | Drag a joint to pose; **Shift+drag joint** changes apparent limb length; **Alt+drag bone** bends it; Inspector supports exact length/bend |
 | `Line`, `Rectangle`, `Ellipse` | Draw primitives; **drag line endpoints** to shorten/rotate props (e.g. staffs), **Alt+drag line** or Inspector to bend a line |
 | `+` under Frames | Insert a **completely empty** frame after the current one; do not inherit objects or a background |
-| Duplicate frame (`Ctrl+D` or copy button) | Create an **independent editable copy** of the current frame's stickmen and shapes |\n| `Delete frame` | Delete the current animation frame |
+| Duplicate frame (`Ctrl+D` or copy button) | Create an **independent editable copy** of the current frame's stickmen and shapes |
+| `Delete frame` | Delete the current animation frame |
 | `Onion skin` | Show translucent pose from the previous frame (without ghosting static background) |
 | `▶ Play` | Preview animation with the selected FPS |
 | `Frame camera` (`Ctrl+0`) | Recenter the canvas view on the camera frame |
@@ -87,7 +89,9 @@ python -m stickrig.cli export new-project.stickrig.json --output result.mp4
 
 Patch JSON is `{ "expected_revision": 0, "operations": [...] }`. Allowed operations: `add_stickman`, `add_shape`, `set_color`, `set_position`, `set_joint_angle`, `set_layer_visibility`, `set_camera`, `delete_entity`, `insert_frame`, `insert_blank_frame`, `delete_frame`, `move_frame`, `set_frame_hidden`, `set_grid`, `set_segment_scale`, `set_segment_bend`, `set_line_bend`. Frame structure operations are rejected if any layer is locked. Validation rejects unknown references, duplicate IDs, non-finite coordinates, out-of-range frames and changes to locked layers. Stale revisions are rejected and invalid batches leave the original intact. To update the source directly, add the explicit `--in-place` flag.
 
-New `add_stickman` and `add_shape` operations accept an optional zero-based `frame` (default 0); frame-local is the default. Explicit `persistent: true` is reserved for intentional global resources, with no automatic promotion of ordinary shapes to a background.\n\n**MCP status:** not implemented yet. CLI and JSON are the first integration layer; an MCP adapter can be built on the same functions after practical tests.
+New `add_stickman` and `add_shape` operations accept an optional zero-based `frame` (default 0); frame-local is the default. Explicit `persistent: true` is reserved for intentional global resources, with no automatic promotion of ordinary shapes to a background.
+
+**MCP status:** not implemented yet. CLI and JSON are the first integration layer; an MCP adapter can be built on the same functions after practical tests.
 
 ## Project structure
 
@@ -132,7 +136,8 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [14 — GraphicsGale workspace](docs/14-graphicsgale-workspace-v0.4.md) | Dockable editor, blank frame behavior and UI layout |
 | [15 — Animated frame drag](docs/15-animated-frames-drag-v0.4.md) | Drag ghost, moving neighbors, insertion marker, auto-scroll and snap |
 | [16 — Drag smoothing](docs/16-smooth-frame-drag-v0.4.1.md) | Retargetable animation, anti-jitter insertion and scroll smoothing |
-| [17 — Independent frame content](docs/17-frame-local-content-v0.4.2.md) | Per-frame objects, empty +, duplicate semantics and drag threshold |\n| [18 — Minimal stickman and grid](docs/18-simple-rig-grid-escape-v0.5.md) | Esc, minimal silhouette, bend/shorten bones, and adjustable vector grid |
+| [17 — Independent frame content](docs/17-frame-local-content-v0.4.2.md) | Per-frame objects, empty +, duplicate semantics and drag threshold |
+| [18 — Minimal stickman and grid](docs/18-simple-rig-grid-escape-v0.5.md) | Esc, minimal silhouette, bend/shorten bones, and adjustable vector grid |
 
 ## Licensing and attribution
 
