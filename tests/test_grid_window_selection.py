@@ -71,8 +71,11 @@ def test_normal_window_geometry_and_preference_are_persisted(monkeypatch, tmp_pa
     next_window = __import__("stickrig.app", fromlist=["MainWindow"]).MainWindow()
     try:
         assert not next_window._restore_maximized
-        assert abs(next_window.width() - 980) < 40
-        assert abs(next_window.height() - 710) < 40
+        screen = app.primaryScreen().availableGeometry()
+        # Qt clamps restored geometry to the available screen. The CI
+        # offscreen platform is only ~800 px wide, unlike a real desktop.
+        assert min(980, screen.width() - 25) <= next_window.width() <= 980
+        assert min(710, screen.height() - 25) <= next_window.height() <= 710
     finally:
         close_unmodified(next_window)
 
