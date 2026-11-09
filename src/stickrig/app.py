@@ -15,16 +15,18 @@ from PySide6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
-    QDockWidget, QFileDialog, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
+    QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QProgressDialog, QPushButton, QSpinBox,
-    QStatusBar, QToolBar, QVBoxLayout, QWidget,
+    QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .model import (History, Project, RIG_OFFSETS, angle_for_drag, delete_frame, disk_project_changed,
                     get_entity, get_layer, insert_frame, joints_at, load_project,
                     make_shape, make_stickman, save_project, set_key, value_at)
 from .render import export_mp4, render_image, visible_entities
+from .frames_ui import FrameStrip
+from .model import move_frame, set_frame_hidden, visible_frame_indices
 
 
 def _distance_segment(point, a, b) -> float:
@@ -60,7 +62,40 @@ class Canvas(QGraphicsView):
         self.shape_end: tuple[float, float] | None = None
         self.panning = False
         self.pan_start: QPoint | None = None
+        self._pan_residual_x = 0.0
+        self._pan_residual_y = 0.0
+        self._hover_position = None
+        self._preview_items = []
+        self._preview_collect = False
+        self.zoom_hud = QFrame(self.viewport())
+        self.zoom_hud.setObjectName("viewportZoomHud")
+        self.zoom_hud.setStyleSheet(
+            "#viewportZoomHud { background: rgba(252,253,255,235); "
+            "border: 1px solid #a6b2c1; border-radius: 8px; }"
+        )
+        zoom_layout = QHBoxLayout(self.zoom_hud)
+        zoom_layout.setContentsMargins(6, 2, 6, 2)
+        zoom_layout.setSpacing(4)
+        smaller = QToolButton(self.zoom_hud)
+        smaller.setText("−")
+        smaller.clicked.connect(lambda: self.zoom_by(1 / 1.2))
+        zoom_layout.addWidget(smaller)
+        self.zoom_label = QLabel("100%", self.zoom_hud)
+        self.zoom_label.setMinimumWidth(55)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_layout.addWidget(self.zoom_label)
+        bigger = QToolButton(self.zoom_hud)
+        bigger.setText("+")
+        bigger.clicked.connect(lambda: self.zoom_by(1.2))
+        zoom_layout.addWidget(bigger)
+        fit = QToolButton(self.zoom_hud)
+        fit.setText("Fit")
+        fit.setToolTip("Fit camera in view")
+        fit.clicked.connect(self.frame_camera)
+        zoom_layout.addWidget(fit)
+        self.zoom_hud.adjustSize()
         self.redraw()
+        self.reposition_zoom_hud()
 
     def to_world(self, event) -> tuple[float, float]:
         p = self.mapToScene(event.position().toPoint())
@@ -79,25 +114,94 @@ class Canvas(QGraphicsView):
         self.fitInView(QRectF(x - width / 2 - 40, y - height / 2 - 40,
                               width + 80, height + 80),
                        Qt.AspectRatioMode.KeepAspectRatio)
+        self.update_zoom_label()
+
+    def update_zoom_label(self):
+        # Viewport zoom is separate from the project's camera zoom.
+        self.zoom_label.setText(f"{self.transform().m11() * 100:.0f}%")
+
+    def zoom_by(self, multiplier: float):
+        old = self.transform().m11()
+        if 0.05 <= old * multiplier <= 12:
+            self.scale(multiplier, multiplier)
+            self.update_zoom_label()
+
+    @staticmethod
+    def pan_sensitivity(view_scale: float) -> float:
+        """Gentle continuous sensitivity curve: precise when zoomed in."""
+        return max(0.4, min(3.2, 1 / math.sqrt(max(0.05, view_scale))))
+
+    def pan_pixels(self, dx, dy):
+        sensitivity = self.pan_sensitivity(self.transform().m11())
+        self._pan_residual_x += dx * sensitivity
+        self._pan_residual_y += dy * sensitivity
+        whole_x = math.trunc(self._pan_residual_x)
+        whole_y = math.trunc(self._pan_residual_y)
+        self._pan_residual_x -= whole_x
+        self._pan_residual_y -= whole_y
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - whole_x)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() - whole_y)
 
     def wheelEvent(self, event):
-        """Unmodified touchpad swipe/wheel pans; Ctrl+wheel zooms about the pointer."""
+        """Swipe/wheel pans with zoom-adaptive sensitivity; Ctrl+wheel zooms."""
         pixels, angles = event.pixelDelta(), event.angleDelta()
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             dy = pixels.y() if pixels.y() else angles.y() / 120 * 56
             if dy:
-                factor = math.exp(max(-4.0, min(4.0, dy / 280)))
-                current = self.transform().m11()
-                if 0.05 < current * factor < 12:
-                    self.scale(factor, factor)
+                self.zoom_by(math.exp(max(-4.0, min(4.0, dy / 280))))
         else:
             dx = pixels.x() if pixels.x() else angles.x() / 120 * 56
             dy = pixels.y() if pixels.y() else angles.y() / 120 * 56
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and not dx:
                 dx, dy = dy, 0
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - round(dx))
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - round(dy))
+            self.pan_pixels(dx, dy)
         event.accept()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "zoom_hud"):
+            self.reposition_zoom_hud()
+
+    def reposition_zoom_hud(self):
+        self.zoom_hud.adjustSize()
+        self.zoom_hud.move(max(6, self.viewport().width() - self.zoom_hud.width() - 12),
+                           max(6, self.viewport().height() - self.zoom_hud.height() - 12))
+        self.zoom_hud.raise_()
+
+    def _track_preview_item(self, item):
+        if self._preview_collect:
+            self._preview_items.append(item)
+        return item
+
+    def clear_placement_preview(self):
+        for item in self._preview_items:
+            if item.scene() is self.graphics:
+                self.graphics.removeItem(item)
+        self._preview_items.clear()
+
+    def update_placement_preview(self):
+        self.clear_placement_preview()
+        kind = self.editor.tool
+        if (self._hover_position is None or self.editor.playing or self.panning or
+                self.shape_start is not None or self.drag_id is not None or
+                kind not in ("stickman", "line", "rectangle", "circle")):
+            return
+        x, y = self._hover_position
+        if kind == "stickman":
+            obj = make_stickman(x, y)
+        else:
+            end = [x + 90, y + (0 if kind == "line" else 60)]
+            obj = make_shape(kind, [x, y], end)
+        self._preview_collect = True
+        try:
+            self._render_entity(obj, self.editor.frame, z=95, opacity=0.40, ghost=True)
+        finally:
+            self._preview_collect = False
+
+    def leaveEvent(self, event):
+        self._hover_position = None
+        self.clear_placement_preview()
+        super().leaveEvent(event)
 
     def _line(self, a, b, color, width, *, z=0, opacity=1.0, dash=False):
         pen = QPen(QColor(color), width)
@@ -108,7 +212,7 @@ class Canvas(QGraphicsView):
         item = self.graphics.addLine(a[0], a[1], b[0], b[1], pen)
         item.setOpacity(opacity)
         item.setZValue(z)
-        return item
+        return self._track_preview_item(item)
 
     def _ellipse(self, box, color, width, fill=None, *, z=0, opacity=1.0):
         pen = QPen(QColor(color), width)
@@ -116,7 +220,7 @@ class Canvas(QGraphicsView):
         item = self.graphics.addEllipse(QRectF(*box), pen, brush)
         item.setZValue(z)
         item.setOpacity(opacity)
-        return item
+        return self._track_preview_item(item)
 
     def _rect(self, box, color, width, fill=None, *, z=0, opacity=1.0):
         pen = QPen(QColor(color), width)
@@ -124,7 +228,7 @@ class Canvas(QGraphicsView):
         item = self.graphics.addRect(QRectF(*box), pen, brush)
         item.setZValue(z)
         item.setOpacity(opacity)
-        return item
+        return self._track_preview_item(item)
 
     def _render_entity(self, e, frame: int, *, z=0, opacity=1.0, ghost=False):
         kind = e["kind"]
@@ -158,6 +262,7 @@ class Canvas(QGraphicsView):
 
     def redraw(self) -> None:
         self.graphics.clear()
+        self._preview_items.clear()
         project = self.editor.project
         cam = project.scene["camera"]
         width, height = project.width / cam["zoom"], project.height / cam["zoom"]
@@ -183,6 +288,7 @@ class Canvas(QGraphicsView):
             if kind in ("line", "rectangle", "circle"):
                 demo = make_shape(kind, list(self.shape_start), list(self.shape_end))
                 self._render_entity(demo, self.editor.frame, z=60, opacity=0.5)
+        self.update_placement_preview()
 
     def _pick(self, point: tuple[float, float]):
         threshold = 13 / max(self.transform().m11(), 0.05)
@@ -248,8 +354,7 @@ class Canvas(QGraphicsView):
         if self.panning and self.pan_start is not None:
             current = event.position().toPoint()
             delta = current - self.pan_start
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            self.pan_pixels(delta.x(), delta.y())
             self.pan_start = current
             return
         if self.shape_start is not None:
@@ -276,6 +381,8 @@ class Canvas(QGraphicsView):
                 e["b"] = [before["b"][0] + dx, before["b"][1] + dy]
             self.redraw()
             return
+        self._hover_position = point
+        self.update_placement_preview()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -421,10 +528,10 @@ class MainWindow(QMainWindow):
         frames = QWidget()
         frame_layout = QVBoxLayout(frames)
         frame_layout.setContentsMargins(5, 5, 5, 5)
-        self.frames_list = QListWidget()
+        self.frames_list = FrameStrip(self)
         self.frames_list.setIconSize(QSize(128, 72))
         self.frames_list.setSpacing(6)
-        self.frames_list.setMinimumWidth(210)
+        self.frames_list.setMinimumWidth(265)
         self.frames_list.currentRowChanged.connect(
             lambda row: self.set_frame(row) if row >= 0 else None
         )
@@ -432,38 +539,44 @@ class MainWindow(QMainWindow):
             lambda _: self.schedule_thumbnails()
         )
         frame_layout.addWidget(self.frames_list, 1)
-        controls = QHBoxLayout()
-        for label, handler in (("|◀", self.first_frame), ("◀", self.prev_frame),
-                               ("▶ Play", self.toggle_play), ("▶|", self.next_frame)):
-            button = QPushButton(label)
-            button.clicked.connect(handler)
-            controls.addWidget(button)
-            if label == "▶ Play":
-                self.play_btn = button
-        frame_layout.addLayout(controls)
         frame_ops = QHBoxLayout()
         for label, handler in (("+ Copy next", self.add_frame), ("Delete", self.remove_frame)):
             button = QPushButton(label)
             button.clicked.connect(handler)
             frame_ops.addWidget(button)
         frame_layout.addLayout(frame_ops)
-        options = QHBoxLayout()
-        options.addWidget(QLabel("Frame"))
-        self.frame_spin = QSpinBox()
-        self.frame_spin.setMinimum(1)
-        self.frame_spin.valueChanged.connect(lambda value: self.set_frame(value - 1))
-        options.addWidget(self.frame_spin)
-        self.frame_total = QLabel("/ 1")
-        options.addWidget(self.frame_total)
-        options.addWidget(QLabel("FPS"))
-        self.fps_spin = QSpinBox()
-        self.fps_spin.setRange(1, 60)
-        self.fps_spin.valueChanged.connect(self.change_fps)
-        options.addWidget(self.fps_spin)
-        frame_layout.addLayout(options)
         self.frames_dock = self.make_dock(
             "Frames", "frames_dock", frames, Qt.DockWidgetArea.LeftDockWidgetArea
         )
+
+        # A separate compact playback strip, independent of the Frames browser.
+        playback = QToolBar("Playback", self)
+        playback.setObjectName("playback_toolbar")
+        playback.setMovable(True)
+        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, playback)
+        for label, handler in (("|◀", self.first_frame), ("◀", self.prev_frame),
+                               ("▶ Play", self.toggle_play), ("▶|", self.next_frame)):
+            button = QPushButton(label)
+            button.setMaximumHeight(28)
+            button.clicked.connect(handler)
+            playback.addWidget(button)
+            if label == "▶ Play":
+                self.play_btn = button
+        playback.addSeparator()
+        playback.addWidget(QLabel("Frame "))
+        self.frame_spin = QSpinBox()
+        self.frame_spin.setRange(1, self.project.duration)
+        self.frame_spin.valueChanged.connect(lambda value: self.set_frame(value - 1))
+        playback.addWidget(self.frame_spin)
+        self.frame_total = QLabel("/ 1")
+        playback.addWidget(self.frame_total)
+        playback.addSeparator()
+        playback.addWidget(QLabel(" FPS "))
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setRange(1, 60)
+        self.fps_spin.valueChanged.connect(self.change_fps)
+        playback.addWidget(self.fps_spin)
+        self.playback_toolbar = playback
 
         library = QWidget()
         library_layout = QVBoxLayout(library)
@@ -640,13 +753,19 @@ class MainWindow(QMainWindow):
             self._thumb_cache.clear()
             for row in range(self.project.duration):
                 item = QListWidgetItem(f"Frame {row + 1}")
-                item.setSizeHint(QSize(215, 90))
+                item.setSizeHint(QSize(255, 96))
                 self.frames_list.addItem(item)
             self.frames_list.blockSignals(False)
             content_changed = True
         if content_changed:
             self._thumb_epoch += 1
             self._thumb_cache.clear()
+            hidden = set(self.project.scene.get("hidden_frames", []))
+            for row in range(self.frames_list.count()):
+                item = self.frames_list.item(row)
+                item.setText(f"{row + 1}" + ("  (hidden)" if row in hidden else ""))
+                item.setData(Qt.ItemDataRole.UserRole + 2, row in hidden)
+                item.setForeground(QColor("#8894a3" if row in hidden else "#20252d"))
         if self.frames_list.currentRow() != self.frame:
             self.frames_list.blockSignals(True)
             self.frames_list.setCurrentRow(self.frame)
@@ -713,6 +832,7 @@ class MainWindow(QMainWindow):
 
     def select_tool(self, key):
         self.tool = key
+        self.canvas.update_placement_preview()
         for name, action in self.tool_actions.items():
             action.setChecked(key == name)
         self.statusBar().showMessage({"select": "Drag a joint to pose it; drag a bone to move the whole character.",
@@ -879,33 +999,71 @@ class MainWindow(QMainWindow):
 
     def set_frame(self, frame):
         self.frame = max(0, min(self.project.duration - 1, frame))
+        if self.playing and self.frame in self._play_sequence:
+            self._play_cursor = self._play_sequence.index(self.frame)
         self.refresh(content_changed=False)
 
     def add_frame(self):
-        if self.playing:
-            self.toggle_play()
-        self.mutate(lambda: setattr(self, "frame", insert_frame(self.project, self.frame)))
+        self.insert_frame_after(self.frame)
+
+    def insert_frame_after(self, source):
+        self.stop_playback()
+        self.mutate(lambda: setattr(self, "frame", insert_frame(self.project, source)))
+
+    def duplicate_frame_at(self, source):
+        # Hold mode: inserting after a frame duplicates its visual state.
+        self.insert_frame_after(source)
+
+    def append_frame(self):
+        self.insert_frame_after(self.project.duration - 1)
 
     def remove_frame(self):
-        if self.playing:
-            self.toggle_play()
+        self.delete_frame_at(self.frame)
+
+    def delete_frame_at(self, source):
+        self.stop_playback()
         try:
-            self.mutate(lambda: setattr(self, "frame", delete_frame(self.project, self.frame)))
+            self.mutate(lambda: setattr(self, "frame", delete_frame(self.project, source)))
         except ValueError as exc:
-            self.statusBar().showMessage(str(exc), 3000)
+            self.statusBar().showMessage(str(exc), 3500)
+
+    def move_frame_to(self, source, target):
+        self.stop_playback()
+        try:
+            self.mutate(lambda: setattr(self, "frame", move_frame(self.project, source, target)))
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 3500)
+
+    def toggle_frame_visibility(self, frame):
+        self.stop_playback()
+        hidden = frame in self.project.scene.get("hidden_frames", [])
+        try:
+            self.mutate(lambda: set_frame_hidden(self.project, frame, not hidden))
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 3500)
 
     def toggle_play(self):
         self.playing = not self.playing
         if self.playing:
+            self._play_sequence = visible_frame_indices(self.project)
+            if self.frame not in self._play_sequence:
+                self.frame = self._play_sequence[0]
+            self._play_cursor = self._play_sequence.index(self.frame)
             self.timer.start(max(1, round(1000 / self.project.fps)))
             self.play_btn.setText("⏸ Pause")
+            self.refresh(content_changed=False)
         else:
             self.timer.stop()
             self.play_btn.setText("▶ Play")
         self.canvas.redraw()
+        if not self.playing:
+            self.schedule_thumbnails()
 
     def advance_frame(self):
-        self.set_frame((self.frame + 1) % self.project.duration)
+        if not self.playing:
+            return
+        self._play_cursor = (self._play_cursor + 1) % len(self._play_sequence)
+        self.set_frame(self._play_sequence[self._play_cursor])
 
     def undo(self):
         workspace = copy.deepcopy(self.project.workspace)
@@ -1020,7 +1178,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.stop_playback()
-        progress = QProgressDialog("Rendering frames…", "Cancel", 0, self.project.duration, self)
+        count = len(visible_frame_indices(self.project))
+        progress = QProgressDialog("Rendering frames…", "Cancel", 0, count, self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         try:
@@ -1030,7 +1189,7 @@ class MainWindow(QMainWindow):
                 if progress.wasCanceled():
                     raise RuntimeError("Export cancelled")
             export_mp4(self.project, path, progress=update)
-            progress.setValue(self.project.duration)
+            progress.setValue(count)
             QMessageBox.information(self, "Export complete", f"Saved:\n{path}")
         except (ValueError, OSError, RuntimeError) as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
@@ -1046,10 +1205,13 @@ class MainWindow(QMainWindow):
                                 "StickRig Studio 0.1 — prototype\n\n"
                                 "Select/Move: drag a joint to pose, drag a bone to move.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
-                                "Frames: + Copy next / Delete frame, Onion skin.\n"
+                                "Frames: right-click for actions; drag by ≡ to reorder; hide from playback.\n"
+                                "Playback controls are on the lower toolbar.\n"
+                                "Elements follow the pointer as a transparent placement preview.\n"
                                 "Camera: static X/Y/zoom, Frame camera (Ctrl+0).\n"
                                 "Undo/Redo: Ctrl+Z / Ctrl+Y. Save: Ctrl+S.\n"
-                                "Pan: touchpad swipe / wheel / middle mouse. Zoom: Ctrl+wheel.\n"
+                                "Pan: touchpad swipe / wheel / middle mouse; adaptive sensitivity.\n"
+                                "Zoom: Ctrl+wheel, or bottom-right viewport zoom controls.\n"
                                 "Docks: drag, resize, close, reopen from View menu.\n\n"
                                 "Project is editable JSON; experimental AI patching via stickrig-cli.")
 

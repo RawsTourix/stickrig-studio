@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .model import Project, RIG_OFFSETS, joints_at
+from .model import Project, RIG_OFFSETS, joints_at, visible_frame_indices
 
 
 def visible_entities(project: Project):
@@ -107,10 +107,11 @@ def export_mp4(project: Project, path: str | Path, *, ffmpeg: str = "ffmpeg",
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert proc.stdin is not None
-        for f in range(project.duration):
+        frames = visible_frame_indices(project)
+        for index, f in enumerate(frames, start=1):
             proc.stdin.write(render_image(project, f).tobytes())
             if progress:
-                progress(f + 1, project.duration)
+                progress(index, len(frames))
         proc.stdin.close()
         proc.stdin = None
         _, stderr = proc.communicate()

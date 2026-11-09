@@ -7,6 +7,7 @@ missing values are held from the previous key or fall back to entity defaults.
 from __future__ import annotations
 
 import copy
+from bisect import bisect_right
 import json
 import math
 import os
@@ -91,6 +92,7 @@ class Project:
                 "id": "main",
                 "name": "Main scene",
                 "duration_frames": 1,
+                "hidden_frames": [],
                 "camera": {"center": [self.width / 2, self.height / 2], "zoom": 1.0},
                 "layers": [
                     {"id": "background", "name": "Background", "visible": True, "locked": False},
@@ -172,6 +174,11 @@ class Project:
         duration = s.get("duration_frames")
         if type(duration) is not int or not 1 <= duration <= 100_000:
             raise ValueError("duration_frames must be 1..100000")
+        hidden = s.get("hidden_frames", [])
+        if (not isinstance(hidden, list) or len(hidden) >= duration or
+                any(type(i) is not int or not 0 <= i < duration for i in hidden) or
+                hidden != sorted(set(hidden))):
+            raise ValueError("hidden_frames must be sorted unique indices with one visible frame")
         cam = s.get("camera", {})
         if not isinstance(cam, dict):
             raise ValueError("camera must be an object")
@@ -405,20 +412,116 @@ def insert_frame(project: Project, after: int) -> int:
         for key in track["keyframes"]:
             if key["frame"] > after:
                 key["frame"] += 1
+    hidden = project.scene.get("hidden_frames", [])
+    project.scene["hidden_frames"] = [i + 1 if i > after else i for i in hidden]
     project.scene["duration_frames"] += 1
     return after + 1
 
 
+def visible_frame_indices(project: Project) -> list[int]:
+    """Frames used by playback/export. Hiding never destroys a stored pose."""
+    hidden = set(project.scene.get("hidden_frames", []))
+    return [i for i in range(project.duration) if i not in hidden]
+
+
+def set_frame_hidden(project: Project, frame: int, hidden: bool) -> None:
+    """Toggle non-destructive exclusion from playback/export."""
+    if type(frame) is not int or not 0 <= frame < project.duration:
+        raise ValueError("frame out of range")
+    if type(hidden) is not bool:
+        raise ValueError("hidden must be boolean")
+    frames = set(project.scene.get("hidden_frames", []))
+    if hidden:
+        if frame not in frames and len(frames) >= project.duration - 1:
+            raise ValueError("cannot hide the last visible frame")
+        frames.add(frame)
+    else:
+        frames.discard(frame)
+    project.scene["hidden_frames"] = sorted(frames)
+
+
+def _remap_tracks(project: Project, new_duration: int, old_at_new, new_at_old,
+                  boundaries: tuple[int, ...]) -> None:
+    """Transform hold tracks by frame identity, without allocating a full frame bitmap.
+
+    For each property, only step-transition boundaries and splice boundaries need
+    resampling. This preserves poses when reordered/deleted, even when the key
+    defining a held pose is the moved/deleted frame.
+    """
+    entities = {e["id"]: e for e in project.scene["entities"]}
+    for track in project.scene["tracks"]:
+        keys = track["keyframes"]
+        old_positions = [key["frame"] for key in keys]
+        e = entities[track["target_id"]]
+        prop = track["property"]
+        base = e["position"] if prop == "position" else e.get("pose", {}).get(prop[5:], 0.0)
+
+        def old_value(idx: int):
+            pos = bisect_right(old_positions, idx) - 1
+            return keys[pos]["value"] if pos >= 0 else base
+
+        candidates = {0}
+        for idx in boundaries:
+            candidates.update((idx - 1, idx, idx + 1))
+        for key in keys:
+            old = key["frame"]
+            for neighbor in (old - 1, old, old + 1):
+                if neighbor < 0:
+                    continue
+                mapped = new_at_old(neighbor)
+                if mapped is not None:
+                    candidates.update((mapped - 1, mapped, mapped + 1))
+        new_keys = []
+        for idx in sorted(i for i in candidates if 0 <= i < new_duration):
+            value = old_value(old_at_new(idx))
+            previous = old_value(old_at_new(idx - 1)) if idx > 0 else base
+            if value != previous:
+                new_keys.append({"frame": idx, "value": copy.deepcopy(value),
+                                 "interpolation": "hold"})
+        track["keyframes"] = new_keys
+
+
+def move_frame(project: Project, source: int, target: int) -> int:
+    """Move a frame to the target *final index*, retaining its exact pose state."""
+    duration = project.duration
+    if (type(source) is not int or type(target) is not int or
+            not 0 <= source < duration or not 0 <= target < duration):
+        raise ValueError("frame out of range")
+    if source == target:
+        return target
+
+    def old_at_new(idx: int) -> int:
+        if source < target:
+            return source if idx == target else idx + 1 if source <= idx < target else idx
+        return source if idx == target else idx - 1 if target < idx <= source else idx
+
+    def new_at_old(idx: int) -> int | None:
+        if source < target:
+            return target if idx == source else idx - 1 if source < idx <= target else idx
+        return target if idx == source else idx + 1 if target <= idx < source else idx
+
+    _remap_tracks(project, duration, old_at_new, new_at_old,
+                  (source, target, min(source, target), max(source, target)))
+    old_hidden = project.scene.get("hidden_frames", [])
+    project.scene["hidden_frames"] = sorted(new_at_old(i) for i in old_hidden)
+    return target
+
+
 def delete_frame(project: Project, frame: int) -> int:
-    if project.duration == 1 or not 0 <= frame < project.duration:
+    if project.duration == 1 or type(frame) is not int or not 0 <= frame < project.duration:
         raise ValueError("cannot delete frame")
-    for t in project.scene["tracks"]:
-        keys = t["keyframes"]
-        t["keyframes"] = [k for k in keys if k["frame"] != frame]
-        for k in t["keyframes"]:
-            if k["frame"] > frame:
-                k["frame"] -= 1
-    project.scene["duration_frames"] -= 1
+    old_duration = project.duration
+    _remap_tracks(
+        project, old_duration - 1,
+        lambda i: i if i < frame else i + 1,
+        lambda i: None if i == frame else i if i < frame else i - 1,
+        (frame,),
+    )
+    old_hidden = project.scene.get("hidden_frames", [])
+    project.scene["hidden_frames"] = [
+        i if i < frame else i - 1 for i in old_hidden if i != frame
+    ]
+    project.scene["duration_frames"] = old_duration - 1
     return min(frame, project.duration - 1)
 
 

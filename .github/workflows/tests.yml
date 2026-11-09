@@ -20,4 +20,4 @@ jobs:
       - name: Install package and test tools
         run: python -m pip install -e '.[dev]'
       - name: Unit tests and headless GUI smoke
-        run: python -m pytest -q
+        run: timeout 120s python -m pytest -vv

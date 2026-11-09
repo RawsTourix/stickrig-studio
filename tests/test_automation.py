@@ -127,3 +127,30 @@ def test_cli_inspect_exposes_keyframes_for_ai(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["camera"]["zoom"] == 1
     assert result["tracks"][0]["keyframes"][0]["value"] == 30
+
+
+def test_ai_changes_frame_order_and_visibility_atomically():
+    from stickrig.model import visible_frame_indices
+    p = Project()
+    edited, report = apply_patch(p, {"expected_revision": 0, "operations": [
+        {"op": "insert_frame", "after": 0},
+        {"op": "insert_frame", "after": 1},
+        {"op": "set_frame_hidden", "frame": 1, "hidden": True},
+        {"op": "move_frame", "source": 1, "target": 2},
+    ]})
+    assert edited.duration == 3
+    assert edited.scene["hidden_frames"] == [2]
+    assert visible_frame_indices(edited) == [0, 1]
+    assert p.duration == 1
+
+
+def test_ai_frame_changes_rollback_on_error():
+    p = Project()
+    original = p.to_dict()
+    with pytest.raises(ValueError):
+        apply_patch(p, {"expected_revision": 0, "operations": [
+            {"op": "insert_frame", "after": 0},
+            {"op": "set_frame_hidden", "frame": 0, "hidden": True},
+            {"op": "set_frame_hidden", "frame": 1, "hidden": True},
+        ]})
+    assert p.to_dict() == original

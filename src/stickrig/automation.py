@@ -6,7 +6,8 @@ import copy
 from typing import Any
 
 from .model import (Project, _color, _id, _number, _point, get_entity, get_layer,
-                    make_shape, make_stickman, set_key)
+                    make_shape, make_stickman, set_key, insert_frame, delete_frame,
+                    move_frame, set_frame_hidden)
 
 
 class RevisionConflict(ValueError):
@@ -84,6 +85,27 @@ def apply_patch(project: Project, patch: dict[str, Any], *, dry_run: bool = Fals
                     raise ValueError("camera.zoom must be 0.05..30")
                 camera["zoom"] = zoom
             changes.append("update camera")
+        elif cmd in ("insert_frame", "delete_frame", "move_frame", "set_frame_hidden"):
+            if cmd != "set_frame_hidden" and any(
+                layer["locked"] for layer in updated.scene["layers"]
+            ):
+                raise ValueError("cannot change frame order with locked layers")
+            if cmd == "insert_frame":
+                frame = op.get("after")
+                insert_frame(updated, frame)
+                changes.append(f"insert after frame {frame}")
+            elif cmd == "delete_frame":
+                frame = op.get("frame")
+                delete_frame(updated, frame)
+                changes.append(f"delete frame {frame}")
+            elif cmd == "move_frame":
+                source, target = op.get("source"), op.get("target")
+                move_frame(updated, source, target)
+                changes.append(f"move frame {source} to {target}")
+            else:
+                frame, hidden = op.get("frame"), op.get("hidden")
+                set_frame_hidden(updated, frame, hidden)
+                changes.append(f"frame {frame} hidden={hidden}")
         elif cmd == "delete_entity":
             ident = _id(op.get("id"))
             ensure_writable(get_entity(updated, ident)["layer_id"])
