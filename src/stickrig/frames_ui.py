@@ -5,9 +5,11 @@ Hit targets are shared by painting, mouse handling and tests.
 """
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import (
-    QByteArray, QEasingCurve, QMimeData, QPoint, QRect, QRectF, QSize, Qt,
-    QTimer, QVariantAnimation,
+    QByteArray, QElapsedTimer, QEasingCurve, QMimeData, QPoint, QRect, QRectF,
+    QSize, Qt, QTimer, QVariantAnimation,
 )
 from PySide6.QtGui import QColor, QCursor, QDrag, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -191,8 +193,8 @@ class FrameStrip(QListWidget):
         self._drop_slot = None
         self._drop_target = None
         self._gap_offsets: dict[int, float] = {}
-        self._gap_from: dict[int, float] = {}
         self._gap_to: dict[int, float] = {}
+        self._slot_hysteresis_px = 8
         self._drag_card: QPixmap | None = None
         self._drag_hotspot = QPoint()
         self._pending_settle = None
@@ -201,16 +203,21 @@ class FrameStrip(QListWidget):
         self._settle_overlay = None
         self._settle_animation = None
 
-        self._gap_animation = QVariantAnimation(self)
-        self._gap_animation.setDuration(140)
-        self._gap_animation.setStartValue(0.0)
-        self._gap_animation.setEndValue(1.0)
-        self._gap_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._gap_animation.valueChanged.connect(self._step_gap)
+        # A single clock continuously chases the latest target; changing the
+        # destination never restarts an easing animation from zero velocity.
+        self._gap_clock = QElapsedTimer()
+        self._gap_timer = QTimer(self)
+        self._gap_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._gap_timer.setInterval(16)
+        self._gap_timer.timeout.connect(self._step_gap)
 
         self._scroll_timer = QTimer(self)
-        self._scroll_timer.setInterval(30)
+        self._scroll_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._scroll_timer.setInterval(16)
         self._scroll_timer.timeout.connect(self._auto_scroll)
+        self._scroll_clock = QElapsedTimer()
+        self._scroll_velocity = 0.0
+        self._scroll_fraction = 0.0
 
     def _frame_at(self, pos):
         item = self.itemAt(pos)
@@ -298,7 +305,12 @@ class FrameStrip(QListWidget):
         self._active_source = source
         self._drop_target = source
         self._drop_slot = source
+        self._gap_timer.stop()
         self._gap_offsets.clear()
+        self._gap_to.clear()
+        self._scroll_velocity = 0.0
+        self._scroll_fraction = 0.0
+        self._scroll_clock.start()
         self.viewport().update()
         self._scroll_timer.start()
 
@@ -315,14 +327,15 @@ class FrameStrip(QListWidget):
 
     def _finish_drag(self):
         self._scroll_timer.stop()
-        self._gap_animation.stop()
+        self._gap_timer.stop()
         self._drag_active = False
         self._active_source = -1
         self._drop_slot = None
         self._drop_target = None
         self._gap_offsets.clear()
-        self._gap_from.clear()
         self._gap_to.clear()
+        self._scroll_velocity = 0.0
+        self._scroll_fraction = 0.0
         self.viewport().update()
         if self._pending_settle is not None:
             QTimer.singleShot(0, self._animate_settle)
@@ -358,23 +371,46 @@ class FrameStrip(QListWidget):
         if destination == self._drop_target and targets == self._gap_to:
             return
         self._drop_target = destination
-        self._gap_animation.stop()
-        self._gap_from = dict(self._gap_offsets)
         self._gap_to = targets
         if immediate:
             self._gap_offsets = dict(targets)
+            self._gap_timer.stop()
             self.viewport().update()
-        else:
-            self._gap_animation.start()
+        elif not self._gap_timer.isActive():
+            self._gap_clock.start()
+            self._gap_timer.start()
 
-    def _step_gap(self, value):
-        ratio = float(value)
-        keys = self._gap_from.keys() | self._gap_to.keys()
-        self._gap_offsets = {
-            row: self._gap_from.get(row, 0.0) * (1 - ratio) +
-                 self._gap_to.get(row, 0.0) * ratio
-            for row in keys
-        }
+    def _step_gap(self, dt_ms: float | None = None):
+        """Retargetable, frame-rate-independent smoothing.
+
+        A live drag can cross several cards in less than 140 ms. Restarting
+        a QVariantAnimation for every destination used to reset the easing
+        repeatedly and caused visible pauses/jumps. This clock never restarts
+        while following the cursor; it converges toward the newest offsets.
+        """
+        if not self._drag_active:
+            self._gap_timer.stop()
+            return
+        if dt_ms is None:
+            dt_ms = self._gap_clock.restart()
+        dt = max(1.0, min(48.0, float(dt_ms)))
+        blend = 1.0 - math.exp(-dt / 62.0)
+        rows = self._gap_offsets.keys() | self._gap_to.keys()
+        offsets = {}
+        moving = False
+        for row in rows:
+            start = self._gap_offsets.get(row, 0.0)
+            target = self._gap_to.get(row, 0.0)
+            current = start + (target - start) * blend
+            if abs(target - current) < 0.45:
+                current = target
+            else:
+                moving = True
+            if abs(current) >= 0.45:
+                offsets[row] = current
+        self._gap_offsets = offsets
+        if not moving:
+            self._gap_timer.stop()
         self.viewport().update()
 
     def _insertion_slot(self, point: QPoint) -> int:
@@ -391,15 +427,33 @@ class FrameStrip(QListWidget):
         first, last = rows[0], rows[-1]
         return first if point.y() < self.visualItemRect(self.item(first)).center().y() else min(self.count(), last + 1)
 
+    def _stable_slot(self, proposed: int, pointer: QPoint) -> int:
+        """Small hysteresis around row midpoints prevents slot flickering."""
+        previous = self._drop_slot
+        if previous is None or proposed == previous or abs(proposed - previous) > 1:
+            return proposed
+        boundary = min(previous, proposed)
+        if not 0 <= boundary < self.count():
+            return proposed
+        midpoint = self.visualItemRect(self.item(boundary)).center().y()
+        margin = self._slot_hysteresis_px
+        if proposed > previous and pointer.y() < midpoint + margin:
+            return previous
+        if proposed < previous and pointer.y() > midpoint - margin:
+            return previous
+        return proposed
+
     def _update_target(self, point: QPoint):
         if not self._drag_active:
             return
-        slot = self._insertion_slot(point)
+        slot = self._stable_slot(self._insertion_slot(point), point)
         destination = slot - int(slot > self._active_source)
         destination = max(0, min(self.count() - 1, destination))
+        changed = slot != self._drop_slot
         self._drop_slot = slot
         self._animate_gap(destination)
-        self.viewport().update()
+        if changed:
+            self.viewport().update()
 
     def _insertion_line_y(self):
         slot = self._drop_slot
@@ -426,26 +480,46 @@ class FrameStrip(QListWidget):
         painter.drawEllipse(QRectF(8, y - 4, 8, 8))
         painter.end()
 
-    def _auto_scroll(self, local: QPoint | None = None):
+    def _auto_scroll(self, local: QPoint | None = None, dt_ms: float | None = None):
         if not self._drag_active:
             return
         if local is None:
             local = self.viewport().mapFromGlobal(QCursor.pos())
+        if dt_ms is None:
+            dt_ms = self._scroll_clock.restart()
+        dt = max(1.0, min(48.0, float(dt_ms)))
         rect = self.viewport().rect()
-        if not (-45 <= local.x() <= rect.width() + 45):
+        if not (-45 <= local.x() <= rect.width() + 45 or
+                0 <= local.y() <= rect.height()):
+            self._scroll_velocity = 0.0
+            self._scroll_fraction = 0.0
             return
         band = min(65, max(20, rect.height() // 4))
-        speed = 0
-        if 0 <= local.y() < band:
-            speed = -max(2, round((band - local.y()) * 0.25))
-        elif rect.height() - band < local.y() <= rect.height():
-            speed = max(2, round((local.y() - (rect.height() - band)) * 0.25))
-        if speed:
+        requested = 0.0
+        if local.y() < band:
+            requested = -590.0 * (band - local.y()) / band
+        elif local.y() > rect.height() - band:
+            requested = 590.0 * (local.y() - (rect.height() - band)) / band
+        # Low-pass velocity changes, including when exiting the edge band.
+        blend = 1.0 - math.exp(-dt / 42.0)
+        self._scroll_velocity += (requested - self._scroll_velocity) * blend
+        if abs(self._scroll_velocity) < 1.0:
+            self._scroll_velocity = 0.0
+            self._scroll_fraction = 0.0
+            return
+        self._scroll_fraction += self._scroll_velocity * dt / 1000.0
+        whole = math.trunc(self._scroll_fraction)
+        self._scroll_fraction -= whole
+        if whole:
             scroll = self.verticalScrollBar()
             previous = scroll.value()
-            scroll.setValue(previous + speed)
+            scroll.setValue(previous + whole)
             if scroll.value() != previous:
                 self._update_target(local)
+            else:
+                # Stop residual scroll at physical boundaries.
+                self._scroll_velocity = 0.0
+                self._scroll_fraction = 0.0
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(FRAME_MIME) and event.source() is self:
