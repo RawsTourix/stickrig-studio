@@ -238,3 +238,56 @@ def test_playback_and_elements_can_swap_vertical_dock_order():
         w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
+
+
+def test_frame_card_layout_and_bottom_actions():
+    """Regression for screenshot feedback: actions below preview, grip on right."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QSizePolicy
+    from stickrig.app import MainWindow
+    from stickrig.frames_ui import (
+        FrameDelegate, frame_action_rects, frame_drag_rect, frame_preview_rect,
+    )
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.show()
+        app.processEvents()
+        assert window.frame_plus.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+        assert window.frame_plus.width() >= window.frames_list.width() - 12
+
+        item = window.frames_list.item(0)
+        bounds = window.frames_list.visualItemRect(item).adjusted(3, 3, -3, -3)
+        preview = frame_preview_rect(bounds)
+        buttons = frame_action_rects(bounds)
+        handle = frame_drag_rect(bounds)
+        assert bounds.height() >= 145
+        assert handle.center().x() > preview.right()
+        assert handle.left() > max(button.right() for button in buttons.values())
+        assert all(button.width() == button.height() for button in buttons.values())
+        assert all(button.top() > preview.bottom() for button in buttons.values())
+        assert len({(b.x(), b.y()) for b in buttons.values()}) == 3
+
+        # Click via real event dispatch, not direct private helper calls.
+        viewport = window.frames_list.viewport()
+        QTest.mouseClick(viewport, Qt.MouseButton.LeftButton,
+                         pos=buttons["duplicate"].center())
+        assert window.project.duration == 2
+        app.processEvents()
+        item = window.frames_list.item(0)
+        bounds = window.frames_list.visualItemRect(item).adjusted(3, 3, -3, -3)
+        buttons = frame_action_rects(bounds)
+        QTest.mouseClick(viewport, Qt.MouseButton.LeftButton,
+                         pos=buttons["toggle"].center())
+        assert 0 in window.project.scene["hidden_frames"]
+        QTest.mouseClick(viewport, Qt.MouseButton.LeftButton,
+                         pos=buttons["delete"].center())
+        assert window.project.duration == 1
+        assert window.frames_list.item(0).sizeHint().height() >= 145
+    finally:
+        window.capture_workspace(force=True)
+        window.saved_snapshot = window.project.to_dict()
+        window.close()
