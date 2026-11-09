@@ -78,3 +78,16 @@ def test_small_thumbnail_matches_camera_and_dimensions():
 def test_invalid_preview_size():
     with pytest.raises(ValueError, match="preview size"):
         render_image(Project(), 0, target_size=(0, 40))
+
+def test_preview_frame_count_respects_hidden_flags(tmp_path):
+    from stickrig.model import insert_frame, set_frame_hidden, visible_frame_indices
+    p = Project(width=320, height=180)
+    for _ in range(3):
+        insert_frame(p, p.duration - 1)
+    set_frame_hidden(p, 1, True)
+    set_frame_hidden(p, 3, True)
+    assert visible_frame_indices(p) == [0, 2]
+    from stickrig.model import save_project, load_project
+    path = tmp_path / "hidden.json"
+    save_project(p, path)
+    assert visible_frame_indices(load_project(path)) == [0, 2]
