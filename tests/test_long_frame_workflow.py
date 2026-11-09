@@ -6,7 +6,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -187,11 +187,43 @@ def test_shift_resize_is_grid_independent_and_rest_length_can_be_reset():
         window.select_entity(ident, "knee_l")
         window.segment_length.setValue(60)
         assert get_entity(window.project, ident)["segment_scales"]["knee_l"] == 0.6
-        assert window.reset_length_button.isVisible()
-        window.reset_length_button.click()
+        assert not hasattr(window, "reset_length_button")
+        knee = joints_at(window.project, get_entity(window.project, ident),
+                         window.frame)[0]["knee_l"]
+        spot = window.canvas.mapFromScene(QPointF(*knee))
+        QTest.mouseDClick(window.canvas.viewport(), Qt.MouseButton.LeftButton, pos=spot)
+        app.processEvents()
+        assert window.selected_id == ident
+        assert window.selected_joint == "knee_l"
         assert get_entity(window.project, ident)["segment_scales"]["knee_l"] == 1.0
         assert window.segment_length.value() == 100
+        assert window.canvas.drag_id is None
         window.undo()
         assert get_entity(window.project, ident)["segment_scales"]["knee_l"] == 0.6
+        window.redo()
+        assert get_entity(window.project, ident)["segment_scales"]["knee_l"] == 1.0
+    finally:
+        close_window(window)
+
+
+def test_double_click_empty_area_or_line_does_not_reset_other_limbs():
+    app, window = prepare_window()
+    try:
+        window.add_stickman((250, 260))
+        ident = window.selected_id
+        window.select_tool("select")
+        window.select_entity(ident, "knee_l")
+        window.segment_length.setValue(45)
+        assert get_entity(window.project, ident)["segment_scales"]["knee_l"] == 0.45
+        # Body click is not the joint handle. Clicking the backdrop is not a
+        # geometry-edit command, and neither should change the shortened limb.
+        body = joints_at(window.project, get_entity(window.project, ident),
+                         window.frame)[0]["spine"]
+        for location in (QPointF(520, 420), QPointF(*body)):
+            point = window.canvas.mapFromScene(location)
+            QTest.mouseDClick(window.canvas.viewport(),
+                              Qt.MouseButton.LeftButton, pos=point)
+            app.processEvents()
+            assert get_entity(window.project, ident)["segment_scales"]["knee_l"] == 0.45
     finally:
         close_window(window)
