@@ -118,7 +118,7 @@ class Canvas(QGraphicsView):
                               width + 80, height + 80),
                        Qt.AspectRatioMode.KeepAspectRatio)
         self.update_zoom_label()
-        self.refresh_grid()
+        self.refresh_grid(force=True)
 
     def update_zoom_label(self):
         # Viewport zoom is separate from the project's camera zoom.
@@ -129,7 +129,7 @@ class Canvas(QGraphicsView):
         if 0.05 <= old * multiplier <= 12:
             self.scale(multiplier, multiplier)
             self.update_zoom_label()
-            self.refresh_grid()
+            self.refresh_grid(force=True)
 
     @staticmethod
     def pan_sensitivity(view_scale: float) -> float:
@@ -345,12 +345,24 @@ class Canvas(QGraphicsView):
         painter.drawRect(paper)
         painter.restore()
 
-    def refresh_grid(self):
-        """Force viewport/background repaint after grid or zoom changes.
+    def refresh_grid(self, *, force=False):
+        """Invalidate the grid only when its appearance/camera actually changes.
 
-        QGraphicsScene.clear() only invalidates item regions in MinimalViewport
-        mode, so a background-only preference change needs explicit invalidation.
+        The editor refreshes the canvas for every pose and frame; rebuilding
+        the entire background on every such operation causes unnecessary work.
+        Undo/redo and project load are handled by comparing the paint signature.
         """
+        project = self.editor.project
+        grid = grid_settings(project)
+        camera = project.scene["camera"]
+        signature = (
+            project.width, project.height,
+            camera["center"][0], camera["center"][1], camera["zoom"],
+            grid["enabled"], grid["visible"], grid["spacing"]
+        )
+        if not force and signature == getattr(self, "_grid_paint_signature", None):
+            return
+        self._grid_paint_signature = signature
         self.graphics.invalidate(self.graphics.sceneRect(),
                                  QGraphicsScene.SceneLayer.BackgroundLayer)
         self.viewport().update()
