@@ -316,3 +316,34 @@ def test_hidden_frame_indices_update_on_insert_delete():
     delete_frame(p, 1)
     assert p.scene["hidden_frames"] == [2]
     p.validate()
+
+
+def test_random_reorder_and_delete_preserve_all_poses():
+    import random
+    from stickrig.model import move_frame
+    rng = random.Random(20261109)
+    for _ in range(16):
+        p = Project()
+        p.scene["duration_frames"] = 18
+        hero = make_stickman(100, 150, entity_id="hero")
+        rival = make_stickman(300, 150, entity_id="rival")
+        p.scene["entities"].extend((hero, rival))
+        specs = ((hero, "position"), (hero, "pose.elbow_l"),
+                 (rival, "pose.knee_r"), (rival, "pose.wrist_l"))
+        for entity, prop in specs:
+            for i in sorted(rng.sample(range(18), 6)):
+                value = [rng.randint(0, 500), rng.randint(0, 400)] if prop == "position" else rng.randint(-150, 150)
+                set_key(p, entity["id"], prop, i, value)
+        def states():
+            return [tuple(str(value_at(p, entity, prop, i)) for entity, prop in specs)
+                    for i in range(p.duration)]
+        before = states()
+        source, target = rng.sample(range(p.duration), 2)
+        move_frame(p, source, target)
+        before.insert(target, before.pop(source))
+        assert states() == before
+        deleted = rng.randrange(p.duration)
+        delete_frame(p, deleted)
+        before.pop(deleted)
+        assert states() == before
+        p.validate()
