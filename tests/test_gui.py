@@ -126,3 +126,28 @@ def test_frame_thumbnail_generation_is_lazy():
         w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
+
+
+def test_canvas_placement_ghost_never_creates_real_entity():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        assert len(w.project.scene["entities"]) == 0
+        w.select_tool("stickman")
+        w.canvas._hover_position = (220, 210)
+        w.canvas.update_placement_preview()
+        assert len(w.canvas._preview_items) >= 1
+        assert len(w.project.scene["entities"]) == 0
+        w.select_tool("select")
+        assert w.canvas._preview_items == []
+        before = w.canvas.transform().m11()
+        w.canvas.zoom_by(1.2)
+        assert w.canvas.transform().m11() > before
+        assert w.canvas.zoom_label.text().endswith("%")
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()

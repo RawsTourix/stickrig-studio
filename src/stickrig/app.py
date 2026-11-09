@@ -999,6 +999,8 @@ class MainWindow(QMainWindow):
 
     def set_frame(self, frame):
         self.frame = max(0, min(self.project.duration - 1, frame))
+        if self.playing and self.frame in self._play_sequence:
+            self._play_cursor = self._play_sequence.index(self.frame)
         self.refresh(content_changed=False)
 
     def add_frame(self):
