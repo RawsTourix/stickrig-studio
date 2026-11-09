@@ -528,10 +528,10 @@ class MainWindow(QMainWindow):
         frames = QWidget()
         frame_layout = QVBoxLayout(frames)
         frame_layout.setContentsMargins(5, 5, 5, 5)
-        self.frames_list = QListWidget()
+        self.frames_list = FrameStrip(self)
         self.frames_list.setIconSize(QSize(128, 72))
         self.frames_list.setSpacing(6)
-        self.frames_list.setMinimumWidth(210)
+        self.frames_list.setMinimumWidth(265)
         self.frames_list.currentRowChanged.connect(
             lambda row: self.set_frame(row) if row >= 0 else None
         )
@@ -539,38 +539,44 @@ class MainWindow(QMainWindow):
             lambda _: self.schedule_thumbnails()
         )
         frame_layout.addWidget(self.frames_list, 1)
-        controls = QHBoxLayout()
-        for label, handler in (("|◀", self.first_frame), ("◀", self.prev_frame),
-                               ("▶ Play", self.toggle_play), ("▶|", self.next_frame)):
-            button = QPushButton(label)
-            button.clicked.connect(handler)
-            controls.addWidget(button)
-            if label == "▶ Play":
-                self.play_btn = button
-        frame_layout.addLayout(controls)
         frame_ops = QHBoxLayout()
         for label, handler in (("+ Copy next", self.add_frame), ("Delete", self.remove_frame)):
             button = QPushButton(label)
             button.clicked.connect(handler)
             frame_ops.addWidget(button)
         frame_layout.addLayout(frame_ops)
-        options = QHBoxLayout()
-        options.addWidget(QLabel("Frame"))
-        self.frame_spin = QSpinBox()
-        self.frame_spin.setMinimum(1)
-        self.frame_spin.valueChanged.connect(lambda value: self.set_frame(value - 1))
-        options.addWidget(self.frame_spin)
-        self.frame_total = QLabel("/ 1")
-        options.addWidget(self.frame_total)
-        options.addWidget(QLabel("FPS"))
-        self.fps_spin = QSpinBox()
-        self.fps_spin.setRange(1, 60)
-        self.fps_spin.valueChanged.connect(self.change_fps)
-        options.addWidget(self.fps_spin)
-        frame_layout.addLayout(options)
         self.frames_dock = self.make_dock(
             "Frames", "frames_dock", frames, Qt.DockWidgetArea.LeftDockWidgetArea
         )
+
+        # A separate compact playback strip, independent of the Frames browser.
+        playback = QToolBar("Playback", self)
+        playback.setObjectName("playback_toolbar")
+        playback.setMovable(True)
+        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, playback)
+        for label, handler in (("|◀", self.first_frame), ("◀", self.prev_frame),
+                               ("▶ Play", self.toggle_play), ("▶|", self.next_frame)):
+            button = QPushButton(label)
+            button.setMaximumHeight(28)
+            button.clicked.connect(handler)
+            playback.addWidget(button)
+            if label == "▶ Play":
+                self.play_btn = button
+        playback.addSeparator()
+        playback.addWidget(QLabel("Frame "))
+        self.frame_spin = QSpinBox()
+        self.frame_spin.setRange(1, self.project.duration)
+        self.frame_spin.valueChanged.connect(lambda value: self.set_frame(value - 1))
+        playback.addWidget(self.frame_spin)
+        self.frame_total = QLabel("/ 1")
+        playback.addWidget(self.frame_total)
+        playback.addSeparator()
+        playback.addWidget(QLabel(" FPS "))
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setRange(1, 60)
+        self.fps_spin.valueChanged.connect(self.change_fps)
+        playback.addWidget(self.fps_spin)
+        self.playback_toolbar = playback
 
         library = QWidget()
         library_layout = QVBoxLayout(library)
@@ -747,13 +753,19 @@ class MainWindow(QMainWindow):
             self._thumb_cache.clear()
             for row in range(self.project.duration):
                 item = QListWidgetItem(f"Frame {row + 1}")
-                item.setSizeHint(QSize(215, 90))
+                item.setSizeHint(QSize(255, 96))
                 self.frames_list.addItem(item)
             self.frames_list.blockSignals(False)
             content_changed = True
         if content_changed:
             self._thumb_epoch += 1
             self._thumb_cache.clear()
+            hidden = set(self.project.scene.get("hidden_frames", []))
+            for row in range(self.frames_list.count()):
+                item = self.frames_list.item(row)
+                item.setText(f"{row + 1}" + ("  (hidden)" if row in hidden else ""))
+                item.setData(Qt.ItemDataRole.UserRole + 2, row in hidden)
+                item.setForeground(QColor("#8894a3" if row in hidden else "#20252d"))
         if self.frames_list.currentRow() != self.frame:
             self.frames_list.blockSignals(True)
             self.frames_list.setCurrentRow(self.frame)
@@ -820,6 +832,7 @@ class MainWindow(QMainWindow):
 
     def select_tool(self, key):
         self.tool = key
+        self.canvas.update_placement_preview()
         for name, action in self.tool_actions.items():
             action.setChecked(key == name)
         self.statusBar().showMessage({"select": "Drag a joint to pose it; drag a bone to move the whole character.",
@@ -989,30 +1002,66 @@ class MainWindow(QMainWindow):
         self.refresh(content_changed=False)
 
     def add_frame(self):
-        if self.playing:
-            self.toggle_play()
-        self.mutate(lambda: setattr(self, "frame", insert_frame(self.project, self.frame)))
+        self.insert_frame_after(self.frame)
+
+    def insert_frame_after(self, source):
+        self.stop_playback()
+        self.mutate(lambda: setattr(self, "frame", insert_frame(self.project, source)))
+
+    def duplicate_frame_at(self, source):
+        # Hold mode: inserting after a frame duplicates its visual state.
+        self.insert_frame_after(source)
+
+    def append_frame(self):
+        self.insert_frame_after(self.project.duration - 1)
 
     def remove_frame(self):
-        if self.playing:
-            self.toggle_play()
+        self.delete_frame_at(self.frame)
+
+    def delete_frame_at(self, source):
+        self.stop_playback()
         try:
-            self.mutate(lambda: setattr(self, "frame", delete_frame(self.project, self.frame)))
+            self.mutate(lambda: setattr(self, "frame", delete_frame(self.project, source)))
         except ValueError as exc:
-            self.statusBar().showMessage(str(exc), 3000)
+            self.statusBar().showMessage(str(exc), 3500)
+
+    def move_frame_to(self, source, target):
+        self.stop_playback()
+        try:
+            self.mutate(lambda: setattr(self, "frame", move_frame(self.project, source, target)))
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 3500)
+
+    def toggle_frame_visibility(self, frame):
+        self.stop_playback()
+        hidden = frame in self.project.scene.get("hidden_frames", [])
+        try:
+            self.mutate(lambda: set_frame_hidden(self.project, frame, not hidden))
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 3500)
 
     def toggle_play(self):
         self.playing = not self.playing
         if self.playing:
+            self._play_sequence = visible_frame_indices(self.project)
+            if self.frame not in self._play_sequence:
+                self.frame = self._play_sequence[0]
+            self._play_cursor = self._play_sequence.index(self.frame)
             self.timer.start(max(1, round(1000 / self.project.fps)))
             self.play_btn.setText("⏸ Pause")
+            self.refresh(content_changed=False)
         else:
             self.timer.stop()
             self.play_btn.setText("▶ Play")
         self.canvas.redraw()
+        if not self.playing:
+            self.schedule_thumbnails()
 
     def advance_frame(self):
-        self.set_frame((self.frame + 1) % self.project.duration)
+        if not self.playing:
+            return
+        self._play_cursor = (self._play_cursor + 1) % len(self._play_sequence)
+        self.set_frame(self._play_sequence[self._play_cursor])
 
     def undo(self):
         workspace = copy.deepcopy(self.project.workspace)
@@ -1127,7 +1176,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.stop_playback()
-        progress = QProgressDialog("Rendering frames…", "Cancel", 0, self.project.duration, self)
+        count = len(visible_frame_indices(self.project))
+        progress = QProgressDialog("Rendering frames…", "Cancel", 0, count, self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         try:
@@ -1137,7 +1187,7 @@ class MainWindow(QMainWindow):
                 if progress.wasCanceled():
                     raise RuntimeError("Export cancelled")
             export_mp4(self.project, path, progress=update)
-            progress.setValue(self.project.duration)
+            progress.setValue(count)
             QMessageBox.information(self, "Export complete", f"Saved:\n{path}")
         except (ValueError, OSError, RuntimeError) as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
@@ -1153,10 +1203,13 @@ class MainWindow(QMainWindow):
                                 "StickRig Studio 0.1 — prototype\n\n"
                                 "Select/Move: drag a joint to pose, drag a bone to move.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
-                                "Frames: + Copy next / Delete frame, Onion skin.\n"
+                                "Frames: right-click for actions; drag by ≡ to reorder; hide from playback.\n"
+                                "Playback controls are on the lower toolbar.\n"
+                                "Elements follow the pointer as a transparent placement preview.\n"
                                 "Camera: static X/Y/zoom, Frame camera (Ctrl+0).\n"
                                 "Undo/Redo: Ctrl+Z / Ctrl+Y. Save: Ctrl+S.\n"
-                                "Pan: touchpad swipe / wheel / middle mouse. Zoom: Ctrl+wheel.\n"
+                                "Pan: touchpad swipe / wheel / middle mouse; adaptive sensitivity.\n"
+                                "Zoom: Ctrl+wheel, or bottom-right viewport zoom controls.\n"
                                 "Docks: drag, resize, close, reopen from View menu.\n\n"
                                 "Project is editable JSON; experimental AI patching via stickrig-cli.")
 
