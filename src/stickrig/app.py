@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
     QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QProgressDialog, QPushButton, QSpinBox,
+    QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSpinBox,
     QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -581,13 +581,12 @@ class MainWindow(QMainWindow):
         self.frame_plus.setObjectName("frame_add_blank")
         self.frame_plus.setText("+")
         self.frame_plus.setToolTip("Add a blank frame after the current frame")
-        self.frame_plus.setFixedSize(32, 28)
+        self.frame_plus.setFixedHeight(34)
+        self.frame_plus.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.frame_plus.setToolTip("Add blank frame after the current frame")
         self.frame_plus.clicked.connect(self.add_blank_frame)
-        frame_ops = QHBoxLayout()
-        frame_ops.setContentsMargins(0, 0, 0, 0)
-        frame_ops.addWidget(self.frame_plus)
-        frame_ops.addStretch(1)
-        frame_layout.addLayout(frame_ops)
+        # Stretch across the entire dock width; resize with the Frames panel.
+        frame_layout.addWidget(self.frame_plus)
         self.frames_dock = self.make_dock(
             "Frames", "frames_dock", frames, Qt.DockWidgetArea.LeftDockWidgetArea
         )
@@ -812,7 +811,7 @@ class MainWindow(QMainWindow):
             # Item rows remain lightweight; thumbnail bitmaps are created lazily.
             for row in range(self.project.duration):
                 item = QListWidgetItem(str(row + 1))
-                item.setSizeHint(QSize(255, 96))
+                item.setSizeHint(QSize(255, 154))
                 self.frames_list.addItem(item)
             self.frames_list.blockSignals(False)
             self._displayed_hidden_frames = set()
