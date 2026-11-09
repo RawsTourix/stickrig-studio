@@ -11,7 +11,7 @@ import sys
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
@@ -287,6 +287,42 @@ class Canvas(QGraphicsView):
                                   "#d97706" if joint == self.editor.selected_joint else "#2176b7",
                                   1.5, "#ffffff", z=50)
 
+    def drawBackground(self, painter, rect):
+        """Vector world-pixel grid without allocating a graphics item per line."""
+        super().drawBackground(painter, rect)
+        project = self.editor.project
+        camera = project.scene["camera"]
+        width = project.width / camera["zoom"]
+        height = project.height / camera["zoom"]
+        left = camera["center"][0] - width / 2
+        top = camera["center"][1] - height / 2
+        paper = QRectF(left, top, width, height)
+        painter.save()
+        painter.fillRect(paper, QColor("#ffffff"))
+        settings = grid_settings(project)
+        if settings["enabled"] and settings["visible"]:
+            painter.setClipRect(paper)
+            step = settings["spacing"]
+            scale = max(0.05, abs(self.transform().m11()))
+            display_step = step * max(1, math.ceil(6 / (step * scale)))
+            for axis in (0, 1):
+                lo = left if axis == 0 else top
+                span = width if axis == 0 else height
+                for i in range(math.floor(lo / display_step),
+                               math.ceil((lo + span) / display_step) + 1):
+                    coord = i * display_step
+                    painter.setPen(QPen(QColor("#c5cfdd" if i % 5 == 0 else "#e7ebf2"),
+                                        0.9 if i % 5 == 0 else 0.5))
+                    if axis == 0:
+                        painter.drawLine(QPointF(coord, top), QPointF(coord, top + height))
+                    else:
+                        painter.drawLine(QPointF(left, coord), QPointF(left + width, coord))
+            painter.setClipping(False)
+        painter.setPen(QPen(QColor("#3d485b"), 2.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(paper)
+        painter.restore()
+
     def redraw(self) -> None:
         self.graphics.clear()
         self._preview_items.clear()
@@ -295,28 +331,7 @@ class Canvas(QGraphicsView):
         width, height = project.width / cam["zoom"], project.height / cam["zoom"]
         x, y = cam["center"]
         left, top = x - width / 2, y - height / 2
-        self._rect((left, top, width, height), "#3d485b", 2.0, "#ffffff", z=-200)
-        grid = grid_settings(project)
-        if grid["enabled"] and grid["visible"]:
-            # Coordinates always use world pixels. Reduce visual line density
-            # at low viewport zoom, without changing the true snap spacing.
-            spacing = grid["spacing"]
-            level = max(1, math.ceil(6 / max(0.1, spacing * self.transform().m11())))
-            displayed = spacing * level
-            first_x = math.floor(left / displayed)
-            first_y = math.floor(top / displayed)
-            for index in range(first_x, math.ceil((left + width) / displayed) + 1):
-                gx = index * displayed
-                major = (index % 5 == 0)
-                self._line((gx, top), (gx, top + height),
-                           "#c5cfdd" if major else "#e6ebf2",
-                           1 if major else 0.65, z=-190)
-            for index in range(first_y, math.ceil((top + height) / displayed) + 1):
-                gy = index * displayed
-                major = (index % 5 == 0)
-                self._line((left, gy), (left + width, gy),
-                           "#c5cfdd" if major else "#e6ebf2",
-                           1 if major else 0.65, z=-190)
+        # Camera paper and grid are rendered directly by drawBackground().
         if self.editor.onion_check.isChecked() and self.editor.frame > 0 and not self.editor.playing:
             for e in visible_entities(project, self.editor.frame - 1):
                 if e["kind"] == "stickman":
@@ -339,7 +354,8 @@ class Canvas(QGraphicsView):
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
                 if not segment:
                     for joint, xy in reversed(list(points.items())):
-                        if e.get("rig_style") == "simple" and joint in SIMPLE_HIDDEN_LINKS:
+                        if (e.get("rig_style") == "simple" and
+                                joint in SIMPLE_HIDDEN_LINKS and joint != "head"):
                             continue
                         if math.dist(point, xy) < threshold:
                             return e["id"], joint
