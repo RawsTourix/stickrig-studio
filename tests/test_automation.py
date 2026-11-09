@@ -233,3 +233,51 @@ def test_ai_explicit_persistent_asset_and_bad_scope_are_validated():
         apply_patch(p, {"expected_revision": 0, "operations": [
             {"op": "add_stickman", "position": [60, 50], "persistent": 1},
         ]})
+
+
+def test_ai_updates_grid_and_segment_deformation_atomically():
+    from stickrig.render import render_image
+    from stickrig.model import grid_settings
+    p = Project(width=320, height=180)
+    updated, report = apply_patch(p, {
+        "expected_revision": p.revision,
+        "operations": [
+            {"op": "set_grid", "settings": {"enabled": False, "spacing": 8}},
+            {"op": "add_stickman", "id": "hero", "position": [180, 110], "frame": 0},
+            {"op": "set_segment_scale", "id": "hero", "joint": "knee_l", "value": 0.55},
+            {"op": "set_segment_bend", "id": "hero", "joint": "wrist_r", "value": 0.4},
+            {"op": "add_shape", "kind": "line", "id": "slash",
+             "a": [10, 25], "b": [100, 25], "frame": 0},
+            {"op": "set_line_bend", "id": "slash", "value": -0.3},
+        ],
+    })
+    assert report["after_revision"] == 1
+    assert grid_settings(updated)["spacing"] == 8
+    assert not grid_settings(updated)["enabled"]
+    hero = get_entity(updated, "hero")
+    assert hero["rig_unit"] == 8
+    assert hero["segment_scales"]["knee_l"] == 0.55
+    assert hero["segment_bends"]["wrist_r"] == 0.4
+    assert get_entity(updated, "slash")["bend"] == -0.3
+    updated.validate()
+    assert p.scene["entities"] == []
+
+
+@pytest.mark.parametrize("op", [
+    {"op": "set_grid", "settings": {"spacing": 0}},
+    {"op": "set_grid", "settings": {"visible": "true"}},
+    {"op": "set_grid", "settings": {"unknown": True}},
+    {"op": "set_segment_scale", "id": "hero", "joint": "knee_l", "value": 0.1},
+    {"op": "set_segment_bend", "id": "hero", "joint": "wrist_r", "value": 9},
+    {"op": "set_line_bend", "id": "slash", "value": -3},
+])
+def test_ai_rejects_invalid_grid_or_deformations_without_mutation(op):
+    from stickrig.model import make_stickman, make_shape
+    p = Project()
+    p.scene["entities"].append(make_stickman(200, 200, entity_id="hero", frame_index=0))
+    p.scene["entities"].append(make_shape("line", [0, 10], [80, 10],
+                                           entity_id="slash", frame_index=0))
+    before = p.to_dict()
+    with pytest.raises(ValueError):
+        apply_patch(p, {"expected_revision": 0, "operations": [op]})
+    assert p.to_dict() == before

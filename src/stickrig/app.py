@@ -11,8 +11,8 @@ import sys
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
     QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -21,10 +21,14 @@ from PySide6.QtWidgets import (
     QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .model import (History, Project, RIG_OFFSETS, angle_for_drag, delete_frame, disk_project_changed,
-                    get_entity, get_layer, insert_frame, insert_blank_frame,
-                    joints_at, key_new_actor_visibility, load_project,
-                    make_shape, make_stickman, save_project, set_key, value_at)
+from .model import (History, Project, RIG_OFFSETS, SIMPLE_HIDDEN_LINKS,
+                    angle_for_drag, bend_for_drag, bezier_points, delete_frame,
+                    disk_project_changed, get_entity, get_layer, grid_settings,
+                    insert_frame, insert_blank_frame, joints_at,
+                    key_new_actor_visibility, load_project, make_shape,
+                    make_stickman, rig_offsets, save_project, segment_offset,
+                    set_key, set_segment_bend, set_segment_scale, snap_to_grid,
+                    stickman_strokes, value_at)
 from .render import export_mp4, render_image, visible_entities
 from .frames_ui import FrameStrip
 from .model import move_frame, set_frame_hidden, visible_frame_indices
@@ -103,9 +107,7 @@ class Canvas(QGraphicsView):
         return p.x(), p.y()
 
     def snap(self, point: tuple[float, float]) -> tuple[float, float]:
-        if self.editor.snap_check.isChecked():
-            return tuple(round(v / 10) * 10.0 for v in point)
-        return point
+        return snap_to_grid(point, grid_settings(self.editor.project))
 
     def frame_camera(self) -> None:
         project = self.editor.project
@@ -190,10 +192,13 @@ class Canvas(QGraphicsView):
                 kind not in ("stickman", "line", "rectangle", "circle")):
             return
         x, y = self._hover_position
+        grid = grid_settings(self.editor.project)
         if kind == "stickman":
-            obj = make_stickman(x, y)
+            obj = make_stickman(x, y, frame_index=self.editor.frame,
+                                rig_unit=grid["spacing"])
         else:
-            end = [x + 90, y + (0 if kind == "line" else 60)]
+            unit = grid["spacing"]
+            end = [x + unit * 9, y + (0 if kind == "line" else unit * 6)]
             obj = make_shape(kind, [x, y], end)
         self._preview_collect = True
         try:
@@ -218,6 +223,21 @@ class Canvas(QGraphicsView):
         item.setZValue(z)
         return self._track_preview_item(item)
 
+    def _curve(self, start, end, bend, color, width, *, z=0, opacity=1.0):
+        if abs(bend) < 1e-8:
+            return self._line(start, end, color, width, z=z, opacity=opacity)
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        path = QPainterPath()
+        path.moveTo(*start)
+        path.quadTo((start[0] + end[0]) / 2 - dy * bend,
+                    (start[1] + end[1]) / 2 + dx * bend, *end)
+        pen = QPen(QColor(color), width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        item = self.graphics.addPath(path, pen)
+        item.setZValue(z)
+        item.setOpacity(opacity)
+        return self._track_preview_item(item)
+
     def _ellipse(self, box, color, width, fill=None, *, z=0, opacity=1.0):
         pen = QPen(QColor(color), width)
         brush = QBrush(QColor(fill)) if fill else QBrush(Qt.BrushStyle.NoBrush)
@@ -239,7 +259,13 @@ class Canvas(QGraphicsView):
         color = "#4a9fd4" if ghost else e["color"]
         width = e["stroke_width"]
         if kind == "line":
-            self._line(e["a"], e["b"], color, width, z=z, opacity=opacity)
+            self._curve(e["a"], e["b"], e.get("bend", 0.0), color, width,
+                        z=z, opacity=opacity)
+            if self.editor.selected_id == e["id"] and not ghost and not self.editor.playing:
+                for name in ("a", "b"):
+                    px, py = e[name]
+                    self._ellipse((px - 4.5, py - 4.5, 9, 9), "#2176b7", 1.4,
+                                  "#ffffff", z=50)
         elif kind in ("rectangle", "circle"):
             a, b = e["a"], e["b"]
             box = (min(a[0], b[0]), min(a[1], b[1]),
@@ -250,19 +276,57 @@ class Canvas(QGraphicsView):
                 self._ellipse(box, color, width, z=z, opacity=opacity)
         elif kind == "stickman":
             points, _ = joints_at(self.editor.project, e, frame)
-            for joint, (parent, _) in RIG_OFFSETS.items():
-                if parent:
-                    self._line(points[parent], points[joint], color, width, z=z, opacity=opacity)
+            for _, start, end, bend in stickman_strokes(e, points):
+                self._curve(start, end, bend, color, width, z=z, opacity=opacity)
             x, y = points["head"]
-            self._ellipse((x - 15, y - 15, 30, 30), color, width,
-                          color if e.get("head_filled") else "white",
+            radius = 1.7 * e.get("rig_unit", 10) if e.get("rig_style") == "simple" else 15
+            self._ellipse((x - radius, y - radius, radius * 2, radius * 2),
+                          color, width, color if e.get("head_filled") else "white",
                           z=z, opacity=opacity)
             if self.editor.selected_id == e["id"] and not ghost and not self.editor.playing:
                 for joint, xy in points.items():
+                    if e.get("rig_style") == "simple" and joint in SIMPLE_HIDDEN_LINKS:
+                        continue
                     cx, cy = xy
                     self._ellipse((cx - 5, cy - 5, 10, 10),
                                   "#d97706" if joint == self.editor.selected_joint else "#2176b7",
                                   1.5, "#ffffff", z=50)
+
+    def drawBackground(self, painter, rect):
+        """Vector world-pixel grid without allocating a graphics item per line."""
+        super().drawBackground(painter, rect)
+        project = self.editor.project
+        camera = project.scene["camera"]
+        width = project.width / camera["zoom"]
+        height = project.height / camera["zoom"]
+        left = camera["center"][0] - width / 2
+        top = camera["center"][1] - height / 2
+        paper = QRectF(left, top, width, height)
+        painter.save()
+        painter.fillRect(paper, QColor("#ffffff"))
+        settings = grid_settings(project)
+        if settings["enabled"] and settings["visible"]:
+            painter.setClipRect(paper)
+            step = settings["spacing"]
+            scale = max(0.05, abs(self.transform().m11()))
+            display_step = step * max(1, math.ceil(6 / (step * scale)))
+            for axis in (0, 1):
+                lo = left if axis == 0 else top
+                span = width if axis == 0 else height
+                for i in range(math.floor(lo / display_step),
+                               math.ceil((lo + span) / display_step) + 1):
+                    coord = i * display_step
+                    painter.setPen(QPen(QColor("#c5cfdd" if i % 5 == 0 else "#e7ebf2"),
+                                        0.9 if i % 5 == 0 else 0.5))
+                    if axis == 0:
+                        painter.drawLine(QPointF(coord, top), QPointF(coord, top + height))
+                    else:
+                        painter.drawLine(QPointF(left, coord), QPointF(left + width, coord))
+            painter.setClipping(False)
+        painter.setPen(QPen(QColor("#3d485b"), 2.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(paper)
+        painter.restore()
 
     def redraw(self) -> None:
         self.graphics.clear()
@@ -272,15 +336,7 @@ class Canvas(QGraphicsView):
         width, height = project.width / cam["zoom"], project.height / cam["zoom"]
         x, y = cam["center"]
         left, top = x - width / 2, y - height / 2
-        self._rect((left, top, width, height), "#3d485b", 2.0, "#ffffff", z=-200)
-        if self.editor.grid_check.isChecked():
-            grid = 50
-            start_x = math.floor(left / grid) * grid
-            start_y = math.floor(top / grid) * grid
-            for gx in range(start_x, math.ceil((left + width) / grid) * grid + 1, grid):
-                self._line((gx, top), (gx, top + height), "#e8ecf2", 0.8, z=-190)
-            for gy in range(start_y, math.ceil((top + height) / grid) * grid + 1, grid):
-                self._line((left, gy), (left + width, gy), "#e8ecf2", 0.8, z=-190)
+        # Camera paper and grid are rendered directly by drawBackground().
         if self.editor.onion_check.isChecked() and self.editor.frame > 0 and not self.editor.playing:
             for e in visible_entities(project, self.editor.frame - 1):
                 if e["kind"] == "stickman":
@@ -294,21 +350,33 @@ class Canvas(QGraphicsView):
                 self._render_entity(demo, self.editor.frame, z=60, opacity=0.5)
         self.update_placement_preview()
 
-    def _pick(self, point: tuple[float, float]):
+    def _pick(self, point: tuple[float, float], *, segment=False):
         threshold = 13 / max(self.transform().m11(), 0.05)
         for e in reversed(list(visible_entities(self.editor.project, self.editor.frame))):
             if get_layer(self.editor.project, e["layer_id"])["locked"]:
                 continue
             if e["kind"] == "stickman":
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
-                for joint, xy in reversed(list(points.items())):
-                    if math.dist(point, xy) < threshold:
-                        return e["id"], joint
-                for joint, (parent, _) in RIG_OFFSETS.items():
-                    if parent and _distance_segment(point, points[parent], points[joint]) < threshold:
-                        return e["id"], None
+                if not segment:
+                    for joint, xy in reversed(list(points.items())):
+                        if (e.get("rig_style") == "simple" and
+                                joint in SIMPLE_HIDDEN_LINKS and joint != "head"):
+                            continue
+                        if math.dist(point, xy) < threshold:
+                            return e["id"], joint
+                for joint, a, b, bend in stickman_strokes(e, points):
+                    samples = bezier_points(a, b, bend)
+                    if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
+                           for i in range(len(samples) - 1)):
+                        return e["id"], joint if segment else None
             elif e["kind"] == "line":
-                if _distance_segment(point, e["a"], e["b"]) < threshold:
+                if not segment:
+                    for endpoint in ("a", "b"):
+                        if math.dist(point, e[endpoint]) < threshold:
+                            return e["id"], endpoint
+                samples = bezier_points(tuple(e["a"]), tuple(e["b"]), e.get("bend", 0))
+                if any(_distance_segment(point, samples[i], samples[i + 1]) < threshold
+                       for i in range(len(samples) - 1)):
                     return e["id"], None
             else:
                 a, b = e["a"], e["b"]
@@ -337,7 +405,9 @@ class Canvas(QGraphicsView):
             self.shape_end = point
             self.redraw()
             return
-        eid, joint = self._pick(point)
+        eid, joint = self._pick(
+            point, segment=bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+        )
         self.editor.select_entity(eid, joint)
         if eid:
             self.drag_id = eid
@@ -369,14 +439,35 @@ class Canvas(QGraphicsView):
         if self.drag_id is not None and self.drag_start is not None:
             e = get_entity(self.editor.project, self.drag_id)
             if e["kind"] == "stickman" and self.drag_joint and self.drag_joint != "pelvis":
-                angle = angle_for_drag(self.editor.project, e, self.editor.frame, self.drag_joint, point)
-                set_key(self.editor.project, self.drag_id,
-                        f"pose.{self.drag_joint}", self.editor.frame, angle)
+                joint = self.drag_joint
+                if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                    points, _ = joints_at(self.editor.project, e, self.editor.frame)
+                    parent = rig_offsets(e)[joint][0]
+                    if parent:
+                        set_segment_bend(e, joint,
+                                         bend_for_drag(points[parent], points[joint], point))
+                else:
+                    if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                        points, _ = joints_at(self.editor.project, e, self.editor.frame)
+                        parent = rig_offsets(e)[joint][0]
+                        if parent:
+                            base = math.hypot(*rig_offsets(e)[joint][1])
+                            if base > 0.001:
+                                unit = e.get("rig_unit", 10) / 10.0
+                                factor = math.dist(point, points[parent]) / (base * unit)
+                                set_segment_scale(e, joint, max(0.2, min(2.5, factor)))
+                    angle = angle_for_drag(self.editor.project, e, self.editor.frame, joint, point)
+                    set_key(self.editor.project, self.drag_id,
+                            f"pose.{joint}", self.editor.frame, angle)
             elif e["kind"] == "stickman":
                 assert self.drag_origin is not None
                 dx, dy = point[0] - self.drag_start[0], point[1] - self.drag_start[1]
                 set_key(self.editor.project, self.drag_id, "position", self.editor.frame,
                         [self.drag_origin[0] + dx, self.drag_origin[1] + dy])
+            elif e["kind"] == "line" and self.drag_joint in ("a", "b"):
+                e[self.drag_joint] = [point[0], point[1]]
+            elif e["kind"] == "line" and event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                e["bend"] = bend_for_drag(tuple(e["a"]), tuple(e["b"]), point)
             else:
                 before = next((entry for entry in self.drag_before["scenes"][0]["entities"]
                                if entry["id"] == self.drag_id), None)
@@ -403,7 +494,9 @@ class Canvas(QGraphicsView):
             start = self.shape_start
             self.shape_start = self.shape_end = None
             if math.dist(start, point) < 8:
-                point = (start[0] + 80, start[1] + (0 if self.editor.tool == "line" else 55))
+                step = grid_settings(self.editor.project)["spacing"]
+                point = (start[0] + step * 8,
+                         start[1] + (0 if self.editor.tool == "line" else step * 6))
             self.editor.add_shape(self.editor.tool, start, point)
             self.redraw()
             return
@@ -466,11 +559,30 @@ class MainWindow(QMainWindow):
             self.tool_actions[key] = action
         self.tool_actions["select"].setChecked(True)
         toolbar.addSeparator()
+        grid = grid_settings(self.project)
         self.grid_check = QCheckBox("Grid")
-        self.grid_check.stateChanged.connect(lambda _: self.canvas.redraw())
+        self.grid_check.setToolTip("Enable or disable the grid, preserving preferences")
+        self.grid_check.setChecked(grid["enabled"])
         toolbar.addWidget(self.grid_check)
-        self.snap_check = QCheckBox("Snap (10)")
+        self.grid_visible_check = QCheckBox("Show")
+        self.grid_visible_check.setChecked(grid["visible"])
+        self.grid_visible_check.setToolTip("Hide grid without changing snap settings")
+        toolbar.addWidget(self.grid_visible_check)
+        self.snap_check = QCheckBox("Snap")
+        self.snap_check.setChecked(grid["snap"])
+        self.snap_check.setToolTip("Snap points to grid spacing")
         toolbar.addWidget(self.snap_check)
+        toolbar.addWidget(QLabel(" Step "))
+        self.grid_step = QSpinBox()
+        self.grid_step.setObjectName("grid_spacing")
+        self.grid_step.setRange(1, 200)
+        self.grid_step.setSuffix(" px")
+        self.grid_step.setValue(grid["spacing"])
+        toolbar.addWidget(self.grid_step)
+        self.grid_check.toggled.connect(self.change_grid)
+        self.grid_visible_check.toggled.connect(self.change_grid)
+        self.snap_check.toggled.connect(self.change_grid)
+        self.grid_step.valueChanged.connect(self.change_grid)
         self.onion_check = QCheckBox("Onion skin")
         self.onion_check.setChecked(True)
         self.onion_check.stateChanged.connect(lambda _: self.canvas.redraw())
@@ -526,6 +638,24 @@ class MainWindow(QMainWindow):
         self.fill_head = QCheckBox("Fill head")
         self.fill_head.toggled.connect(self.change_head_fill)
         select_layout.addWidget(self.fill_head)
+        self.segment_box = QGroupBox("Selected segment")
+        segment_layout = QVBoxLayout(self.segment_box)
+        segment_layout.addWidget(QLabel("Visible length"))
+        self.segment_length = QDoubleSpinBox(self.segment_box)
+        self.segment_length.setRange(20, 250)
+        self.segment_length.setSingleStep(5)
+        self.segment_length.setSuffix(" %")
+        self.segment_length.valueChanged.connect(self.change_segment_length)
+        segment_layout.addWidget(self.segment_length)
+        segment_layout.addWidget(QLabel("Curve / bend"))
+        self.segment_bend_spin = QDoubleSpinBox(self.segment_box)
+        self.segment_bend_spin.setRange(-100, 100)
+        self.segment_bend_spin.setSingleStep(5)
+        self.segment_bend_spin.setSuffix(" %")
+        self.segment_bend_spin.valueChanged.connect(self.change_segment_bend)
+        segment_layout.addWidget(self.segment_bend_spin)
+        self.segment_box.setVisible(False)
+        select_layout.addWidget(self.segment_box)
         delete_button = QPushButton("Delete selected")
         delete_button.clicked.connect(self.delete_selected)
         select_layout.addWidget(delete_button)
@@ -857,6 +987,11 @@ class MainWindow(QMainWindow):
             action.triggered.connect(callback)
             file_menu.addAction(action)
         edit_menu = self.menuBar().addMenu("Edit")
+        self.escape_action = QAction("Return to Select / Move", self)
+        self.escape_action.setShortcut(QKeySequence("Esc"))
+        self.escape_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.escape_action.triggered.connect(self.escape_to_select)
+        edit_menu.addAction(self.escape_action)
         for title, callback, shortcut in [("Undo", self.undo, "Ctrl+Z"),
                                           ("Redo", self.redo, "Ctrl+Y"),
                                           ("Delete selected object", self.delete_selected, "Delete")]:
@@ -898,12 +1033,19 @@ class MainWindow(QMainWindow):
         old.pop("revision", None)
         return current != old
 
+    def escape_to_select(self):
+        """Exit element placement and return to editing in one keystroke."""
+        self.canvas.shape_start = self.canvas.shape_end = None
+        self.canvas.clear_placement_preview()
+        self.select_tool("select")
+        self.canvas.redraw()
+
     def select_tool(self, key):
         self.tool = key
         self.canvas.update_placement_preview()
         for name, action in self.tool_actions.items():
             action.setChecked(key == name)
-        self.statusBar().showMessage({"select": "Drag a joint to pose it; drag a bone to move the whole character.",
+        self.statusBar().showMessage({"select": "Drag joint to pose; Shift+joint to shorten; Alt+bone to bend; Esc exits placement.",
                                       "stickman": "Click anywhere to add a stickman.",
                                       "line": "Drag to draw a line.", "rectangle": "Drag to draw a rectangle.",
                                       "circle": "Drag to draw an ellipse."}[key])
@@ -950,7 +1092,8 @@ class MainWindow(QMainWindow):
     def add_stickman(self, point):
         if not self.can_edit_layer("actors"):
             return
-        obj = make_stickman(*point, frame_index=self.frame)
+        obj = make_stickman(*point, frame_index=self.frame,
+                            rig_unit=grid_settings(self.project)["spacing"])
         def add_actor():
             self.project.scene["entities"].append(obj)
         self.mutate(add_actor)
@@ -977,6 +1120,20 @@ class MainWindow(QMainWindow):
         if self._building:
             return
         self.frame = max(0, min(self.frame, self.project.duration - 1))
+        grid = grid_settings(self.project)
+        for checkbox, value in (
+            (self.grid_check, grid["enabled"]),
+            (self.grid_visible_check, grid["visible"]),
+            (self.snap_check, grid["snap"]),
+        ):
+            checkbox.blockSignals(True)
+            checkbox.setChecked(value)
+            checkbox.blockSignals(False)
+        self.grid_step.blockSignals(True)
+        self.grid_step.setValue(grid["spacing"])
+        self.grid_step.blockSignals(False)
+        self.grid_visible_check.setEnabled(grid["enabled"])
+        self.snap_check.setEnabled(grid["enabled"])
         # A frame-local selection cannot silently edit an object belonging to
         # another frame. Clear stale selection after insert, move or delete.
         if self.selected_id and not any(
@@ -1007,6 +1164,42 @@ class MainWindow(QMainWindow):
         self.update_canvas_coordinates(self._cursor_world)
         self.refresh_title()
 
+    def change_grid(self, *_):
+        if self._building:
+            return
+        new = {"enabled": self.grid_check.isChecked(),
+               "visible": self.grid_visible_check.isChecked(),
+               "snap": self.snap_check.isChecked(),
+               "spacing": self.grid_step.value()}
+        if grid_settings(self.project) != new:
+            self.mutate(lambda: self.project.scene.__setitem__("grid", new))
+        else:
+            self.canvas.redraw()
+
+    def change_segment_length(self, value):
+        if not self.selected_id or not self.selected_joint:
+            return
+        joint = self.selected_joint
+        entity = get_entity(self.project, self.selected_id)
+        if entity["kind"] != "stickman":
+            return
+        factor = value / 100
+        if abs(entity.get("segment_scales", {}).get(joint, 1.0) - factor) > 1e-6:
+            self.mutate(lambda: set_segment_scale(entity, joint, factor))
+
+    def change_segment_bend(self, value):
+        if not self.selected_id:
+            return
+        entity = get_entity(self.project, self.selected_id)
+        new = value / 100
+        if entity["kind"] == "stickman" and self.selected_joint:
+            joint = self.selected_joint
+            if abs(entity.get("segment_bends", {}).get(joint, 0) - new) > 1e-6:
+                self.mutate(lambda: set_segment_bend(entity, joint, new))
+        elif entity["kind"] == "line":
+            if abs(entity.get("bend", 0) - new) > 1e-6:
+                self.mutate(lambda: entity.__setitem__("bend", new))
+
     def refresh_inspector(self):
         try:
             e = get_entity(self.project, self.selected_id) if self.selected_id else None
@@ -1022,6 +1215,21 @@ class MainWindow(QMainWindow):
         self.fill_head.setVisible(bool(e and e["kind"] == "stickman"))
         self.fill_head.setChecked(bool(e and e.get("head_filled", False)))
         self.fill_head.blockSignals(False)
+        joint = self.selected_joint
+        show_segment = bool(e and (
+            (e["kind"] == "stickman" and joint and joint != "pelvis" and
+             math.hypot(*segment_offset(e, joint)) > 0.001) or
+            e["kind"] == "line"))
+        self.segment_box.setVisible(show_segment)
+        if show_segment:
+            values = (e.get("segment_scales", {}).get(joint, 1.0) * 100,
+                      e.get("segment_bends", {}).get(joint, 0) * 100) if e["kind"] == "stickman" else (100, e.get("bend", 0) * 100)
+            self.segment_length.setEnabled(e["kind"] == "stickman")
+            for control, value in ((self.segment_length, values[0]),
+                                   (self.segment_bend_spin, values[1])):
+                control.blockSignals(True)
+                control.setValue(value)
+                control.blockSignals(False)
 
     def refresh_layers(self):
         selected_item = self.layers_list.currentItem()
@@ -1328,9 +1536,13 @@ class MainWindow(QMainWindow):
             self.toggle_play()
 
     def about(self):
-        QMessageBox.information(self, "StickRig Studio 0.1",
-                                "StickRig Studio 0.1 — prototype\n\n"
-                                "Select/Move: drag a joint to pose, drag a bone to move.\n"
+        QMessageBox.information(self, "StickRig Studio 0.5",
+                                "StickRig Studio 0.5 — prototype\n\n"
+                                "Esc: leave placement and return to Select / Move.\n"
+                                "Drag joint to pose; Shift+drag joint changes visible limb length.\n"
+                                "Alt+drag a bone bends it; Inspector edits length and curvature.\n"
+                                "Drag line endpoints to rotate/shorten a staff; Alt+drag line to curve.\n"
+                                "Grid / Show / Snap / Step: separate scene-pixel grid controls.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
                                 "Frames: + adds blank frame; Ctrl+D duplicates pose; right-click for more.\n"
                                 "Playback is a movable bottom dock above Elements.\n"

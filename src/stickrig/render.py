@@ -7,7 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .model import Project, RIG_OFFSETS, joints_at, visible_frame_indices, value_at
+from .model import (Project, RIG_OFFSETS, bezier_points, joints_at,
+                    stickman_strokes, visible_frame_indices, value_at)
 
 
 def visible_entities(project: Project, frame: int | None = None):
@@ -65,7 +66,8 @@ def render_image(project: Project, frame: int = 0, *, antialias: int = 2,
         color = e["color"]
         kind = e["kind"]
         if kind == "line":
-            draw.line([pt(e["a"]), pt(e["b"])], fill=color, width=stroke)
+            curve = bezier_points(tuple(e["a"]), tuple(e["b"]), e.get("bend", 0.0))
+            draw.line([pt(p) for p in curve], fill=color, width=stroke, joint="curve")
         elif kind in ("rectangle", "circle"):
             a, b = pt(e["a"]), pt(e["b"])
             bbox = [min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])]
@@ -75,11 +77,12 @@ def render_image(project: Project, frame: int = 0, *, antialias: int = 2,
                 draw.ellipse(bbox, outline=color, width=stroke)
         elif kind == "stickman":
             joints, _ = joints_at(project, e, frame)
-            for joint, (parent, _) in RIG_OFFSETS.items():
-                if parent:
-                    draw.line([pt(joints[parent]), pt(joints[joint])], fill=color, width=stroke)
+            for _, start, end, bend in stickman_strokes(e, joints):
+                curve = bezier_points(start, end, bend)
+                draw.line([pt(p) for p in curve], fill=color, width=stroke, joint="curve")
             head = pt(joints["head"])
-            r = max(1, 15 * zoom)
+            r = max(1, (1.7 * e.get("rig_unit", 10) if e.get("rig_style") == "simple"
+                        else 15) * zoom)
             box = [head[0] - r, head[1] - r, head[0] + r, head[1] + r]
             draw.ellipse(box, outline=color, fill=color if e.get("head_filled") else "white", width=stroke)
     if antialias > 1:

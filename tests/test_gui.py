@@ -335,3 +335,116 @@ def test_gui_shapes_and_characters_are_frame_local_and_blank_is_blank(tmp_path):
         w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
+
+
+def test_escape_returns_to_editing_and_grid_controls_are_independent(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    from stickrig.model import grid_settings, load_project
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        assert w.tool == "select"
+        assert w.grid_step.value() == 10
+        assert w.grid_check.isChecked()
+        assert w.snap_check.isChecked()
+        w.select_tool("stickman")
+        w.canvas._hover_position = (123, 87)
+        w.canvas.update_placement_preview()
+        assert w.tool == "stickman"
+        w.escape_action.trigger()
+        assert w.tool == "select"
+        assert w.tool_actions["select"].isChecked()
+        assert w.canvas._preview_items == []
+
+        assert w.canvas.snap((14, 16)) == (10, 20)
+        w.grid_visible_check.setChecked(False)
+        assert not grid_settings(w.project)["visible"]
+        assert w.canvas.snap((14, 16)) == (10, 20)
+        w.grid_step.setValue(8)
+        assert w.canvas.snap((14, 16)) == (16, 16)
+        w.grid_check.setChecked(False)
+        assert not grid_settings(w.project)["enabled"]
+        assert w.snap_check.isChecked()  # saved preference, disabled temporarily
+        assert w.canvas.snap((14, 16)) == (14, 16)
+        w.grid_check.setChecked(True)
+        assert w.canvas.snap((14, 16)) == (16, 16)
+        w.snap_check.setChecked(False)
+        assert w.canvas.snap((14, 16)) == (14, 16)
+        w.select_tool("stickman")
+        w.add_stickman((144, 144))
+        e = w.project.scene["entities"][0]
+        assert e["rig_style"] == "simple"
+        assert e["rig_unit"] == 8
+        path = tmp_path / "grid-gui.json"
+        w.path = path
+        assert w.save_file()
+        assert grid_settings(load_project(path)) == grid_settings(w.project)
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
+
+
+def test_inspector_edits_joint_length_and_bend_and_line_curvature():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import math
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    from stickrig.model import get_entity, joints_at
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        w.add_stickman((300, 320))
+        hero_id = w.selected_id
+        w.select_tool("select")
+        w.select_entity(hero_id, "knee_l")
+        assert not w.segment_box.isHidden()
+        hero = get_entity(w.project, hero_id)
+        first, _ = joints_at(w.project, hero, w.frame)
+        w.segment_length.setValue(60)
+        w.segment_bend_spin.setValue(25)
+        hero = get_entity(w.project, hero_id)
+        second, _ = joints_at(w.project, hero, w.frame)
+        assert hero["segment_scales"]["knee_l"] == 0.6
+        assert hero["segment_bends"]["knee_l"] == 0.25
+        assert math.dist(second["hip_l"], second["knee_l"]) < (
+            math.dist(first["hip_l"], first["knee_l"]))
+        w.undo()
+        assert get_entity(w.project, hero_id).get("segment_bends", {}).get("knee_l", 0) == 0
+        w.redo()
+        assert get_entity(w.project, hero_id)["segment_bends"]["knee_l"] == 0.25
+
+        w.add_shape("line", (10, 50), (100, 50))
+        line_id = w.selected_id
+        assert not w.segment_box.isHidden()
+        assert not w.segment_length.isEnabled()
+        w.segment_bend_spin.setValue(-40)
+        assert get_entity(w.project, line_id)["bend"] == -0.4
+        w.select_entity(None)
+        assert w.segment_box.isHidden()
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
+
+
+def test_select_line_endpoints_for_staff_length_and_rotation():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        w.add_shape("line", (100, 160), (240, 160))
+        line_id = w.selected_id
+        w.select_tool("select")
+        assert w.canvas._pick((100, 160)) == (line_id, "a")
+        assert w.canvas._pick((240, 160)) == (line_id, "b")
+        assert w.canvas._pick((170, 160)) == (line_id, None)
+        assert w.canvas._pick((170, 160), segment=True) == (line_id, None)
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()

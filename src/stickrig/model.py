@@ -38,6 +38,122 @@ RIG_OFFSETS: dict[str, tuple[str | None, tuple[float, float]]] = {
     "ankle_r": ("knee_r", (5.0, 39.0)),
 }
 
+# A minimalist body: one visible neck-to-hip stroke, two arms and two legs.
+# Shoulder/hip anchors remain in the FK hierarchy but are not rendered.
+SIMPLE_RIG_OFFSETS: dict[str, tuple[str | None, tuple[float, float]]] = {
+    "pelvis": (None, (0.0, 0.0)),
+    "spine": ("pelvis", (0.0, -43.0)),
+    "neck": ("spine", (0.0, -24.0)),
+    "head": ("neck", (0.0, -17.0)),
+    "shoulder_l": ("neck", (0.0, 0.0)),
+    "elbow_l": ("shoulder_l", (-37.0, 29.0)),
+    "wrist_l": ("elbow_l", (-28.0, 28.0)),
+    "shoulder_r": ("neck", (0.0, 0.0)),
+    "elbow_r": ("shoulder_r", (37.0, 29.0)),
+    "wrist_r": ("elbow_r", (28.0, 28.0)),
+    "hip_l": ("pelvis", (0.0, 0.0)),
+    "knee_l": ("hip_l", (-18.0, 41.0)),
+    "ankle_l": ("knee_l", (-16.0, 38.0)),
+    "hip_r": ("pelvis", (0.0, 0.0)),
+    "knee_r": ("hip_r", (18.0, 41.0)),
+    "ankle_r": ("knee_r", (16.0, 38.0)),
+}
+# These links have zero length: no visible shoulder or pelvis bars.
+SIMPLE_HIDDEN_LINKS = {"shoulder_l", "shoulder_r", "hip_l", "hip_r", "head"}
+
+
+def default_grid_spacing(width: int, height: int) -> int:
+    """Select a sensible world-space pixel step from the scene resolution."""
+    target = min(width / 96, height / 54)
+    # 1/2/5 decade multiples remain legible when changed in the toolbar.
+    power = 10 ** math.floor(math.log10(max(target, 0.1)))
+    return int(max(1, min(200, min((1, 2, 5, 10), key=lambda m: abs(target - m * power)) * power)))
+
+
+def grid_settings(project: "Project") -> dict[str, Any]:
+    """Missing grid on legacy projects is interpreted deterministically."""
+    baseline = default_grid_spacing(project.width, project.height)
+    result = {"enabled": True, "visible": True, "snap": True, "spacing": baseline}
+    result.update(project.scene.get("grid", {}))
+    return result
+
+
+def snap_to_grid(point: tuple[float, float], grid: dict[str, Any]) -> tuple[float, float]:
+    if not grid["enabled"] or not grid["snap"]:
+        return point
+    step = grid["spacing"]
+    return tuple(math.floor(v / step + 0.5) * step for v in point)
+
+
+def rig_offsets(entity: dict[str, Any]):
+    return SIMPLE_RIG_OFFSETS if entity.get("rig_style") == "simple" else RIG_OFFSETS
+
+
+def segment_offset(entity: dict[str, Any], joint: str) -> tuple[float, float]:
+    base = rig_offsets(entity)[joint][1]
+    factor = float(entity.get("rig_unit", 10.0)) / 10.0
+    scale = float(entity.get("segment_scales", {}).get(joint, 1.0))
+    return base[0] * factor * scale, base[1] * factor * scale
+
+
+def segment_bend(entity: dict[str, Any], joint: str) -> float:
+    return float(entity.get("segment_bends", {}).get(joint, 0.0))
+
+
+def set_segment_scale(entity: dict[str, Any], joint: str, value: float) -> None:
+    if joint not in rig_offsets(entity) or joint == "pelvis":
+        raise ValueError("invalid segment")
+    length = _number(value, "segment scale")
+    if not 0.2 <= length <= 2.5:
+        raise ValueError("segment scale must be 0.2..2.5")
+    entity.setdefault("segment_scales", {})[joint] = length
+
+
+def set_segment_bend(entity: dict[str, Any], joint: str, value: float) -> None:
+    if joint not in rig_offsets(entity) or joint == "pelvis":
+        raise ValueError("invalid segment")
+    bend = _number(value, "segment bend")
+    if not -1 <= bend <= 1:
+        raise ValueError("segment bend must be -1..1")
+    entity.setdefault("segment_bends", {})[joint] = bend
+
+
+def bend_for_drag(start: tuple[float, float], end: tuple[float, float],
+                  cursor: tuple[float, float]) -> float:
+    """Signed normalized quadratic curvature from a cursor near the midpoint."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    d = math.hypot(dx, dy)
+    if d < 1e-6:
+        return 0.0
+    mid = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+    signed = ((cursor[0] - mid[0]) * (-dy) +
+              (cursor[1] - mid[1]) * dx) / d
+    return max(-1.0, min(1.0, 2 * signed / d))
+
+
+def bezier_points(start: tuple[float, float], end: tuple[float, float],
+                  bend: float, steps: int = 12) -> list[tuple[float, float]]:
+    """Sample the same quadratic curve used by Qt in Pillow and hit testing."""
+    if bend == 0:
+        return [start, end]
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    control = ((start[0] + end[0]) / 2 - dy * bend,
+               (start[1] + end[1]) / 2 + dx * bend)
+    pts = []
+    for index in range(steps + 1):
+        t = index / steps
+        u = 1 - t
+        pts.append((u*u*start[0] + 2*u*t*control[0] + t*t*end[0],
+                    u*u*start[1] + 2*u*t*control[1] + t*t*end[1]))
+    return pts
+
+
+def stickman_strokes(entity: dict[str, Any], points: dict[str, tuple[float, float]]):
+    hidden = SIMPLE_HIDDEN_LINKS if entity.get("rig_style") == "simple" else set()
+    for joint, (parent, _) in rig_offsets(entity).items():
+        if parent and joint not in hidden:
+            yield joint, points[parent], points[joint], segment_bend(entity, joint)
+
 
 def new_id(prefix: str = "obj") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
@@ -93,6 +209,8 @@ class Project:
                 "name": "Main scene",
                 "duration_frames": 1,
                 "hidden_frames": [],
+                "grid": {"enabled": True, "visible": True, "snap": True,
+                         "spacing": default_grid_spacing(self.width, self.height)},
                 "camera": {"center": [self.width / 2, self.height / 2], "zoom": 1.0},
                 "layers": [
                     {"id": "background", "name": "Background", "visible": True, "locked": False},
@@ -179,6 +297,17 @@ class Project:
                 any(type(i) is not int or not 0 <= i < duration for i in hidden) or
                 hidden != sorted(set(hidden))):
             raise ValueError("hidden_frames must be sorted unique indices with one visible frame")
+        grid_data = s.get("grid", {})
+        if not isinstance(grid_data, dict):
+            raise ValueError("grid must be an object")
+        grid = grid_settings(self)
+        if set(grid) != {"enabled", "visible", "snap", "spacing"}:
+            raise ValueError("grid must contain supported fields only")
+        for flag in ("enabled", "visible", "snap"):
+            if type(grid[flag]) is not bool:
+                raise ValueError("grid flags must be booleans")
+        if type(grid["spacing"]) is not int or not 1 <= grid["spacing"] <= 200:
+            raise ValueError("grid.spacing must be an integer in 1..200")
         cam = s.get("camera", {})
         if not isinstance(cam, dict):
             raise ValueError("camera must be an object")
@@ -231,13 +360,34 @@ class Project:
                 _point(e.get("position"), "stickman.position")
                 if type(e.get("head_filled", False)) is not bool:
                     raise ValueError("head_filled must be a boolean")
+                if e.get("rig_style", "legacy") not in ("legacy", "simple"):
+                    raise ValueError("unsupported rig style")
+                unit = _number(e.get("rig_unit", 10), "rig_unit")
+                if not 1 <= unit <= 200:
+                    raise ValueError("rig_unit must be 1..200")
                 for k, v in e.get("pose", {}).items():
                     if k not in RIG_OFFSETS or k == "pelvis":
                         raise ValueError("invalid joint")
                     _number(v, f"pose.{k}")
+                for label, bounds in (("segment_scales", (0.2, 2.5)),
+                                      ("segment_bends", (-1, 1))):
+                    values = e.get(label, {})
+                    if not isinstance(values, dict):
+                        raise ValueError(f"{label} must be a dictionary")
+                    for joint, amount in values.items():
+                        if joint not in RIG_OFFSETS or joint == "pelvis":
+                            raise ValueError(f"invalid {label} joint")
+                        number = _number(amount, label)
+                        if not bounds[0] <= number <= bounds[1]:
+                            raise ValueError(f"{label} out of range")
             else:
                 _point(e.get("a"), "shape.a")
                 _point(e.get("b"), "shape.b")
+                bend = _number(e.get("bend", 0), "shape.bend")
+                if e["kind"] != "line" and bend != 0:
+                    raise ValueError("only line shapes can bend")
+                if not -1 <= bend <= 1:
+                    raise ValueError("shape.bend must be -1..1")
         tracks = s.get("tracks")
         if not isinstance(tracks, list) or len(tracks) > 100_000:
             raise ValueError("invalid tracks")
@@ -291,11 +441,19 @@ class Project:
 
 def make_stickman(x: float, y: float, color: str = "#17191f", *,
                   layer_id: str = "actors", entity_id: str | None = None,
-                  frame_index: int | None = None) -> dict[str, Any]:
+                  frame_index: int | None = None,
+                  rig_style: str | None = None, rig_unit: float = 10.0) -> dict[str, Any]:
     result = {"id": _id(entity_id or new_id("stick")), "kind": "stickman",
               "layer_id": layer_id, "position": _point([x, y], "position"),
-              "color": _color(color), "stroke_width": 4,
+              "color": _color(color), "stroke_width": 3,
               "head_filled": False, "pose": {}}
+    if rig_style is None:
+        rig_style = "simple" if frame_index is not None else "legacy"
+    if rig_style not in ("simple", "legacy"):
+        raise ValueError("unsupported rig style")
+    if rig_style == "simple":
+        result["rig_style"] = "simple"
+        result["rig_unit"] = _number(rig_unit, "rig_unit")
     if frame_index is not None:
         result["frame_index"] = frame_index
     return result
@@ -399,7 +557,7 @@ def joints_at(project: Project, entity: dict[str, Any], frame: int) -> tuple[dic
     pose = evaluated_pose(project, entity, frame)
     points: dict[str, tuple[float, float]] = {}
     angles: dict[str, float] = {}
-    for joint, (parent, offset) in RIG_OFFSETS.items():
+    for joint, (parent, _) in rig_offsets(entity).items():
         if parent is None:
             points[joint] = (origin[0], origin[1])
             angles[joint] = 0.0
@@ -407,7 +565,7 @@ def joints_at(project: Project, entity: dict[str, Any], frame: int) -> tuple[dic
         parent_angle = angles[parent]
         a = parent_angle + pose.get(joint, 0.0)
         rad = math.radians(a)
-        dx, dy = offset
+        dx, dy = segment_offset(entity, joint)
         rotated = (dx * math.cos(rad) - dy * math.sin(rad),
                    dx * math.sin(rad) + dy * math.cos(rad))
         px, py = points[parent]
@@ -421,7 +579,8 @@ def angle_for_drag(project: Project, entity: dict[str, Any], frame: int,
     if joint == "pelvis" or joint not in RIG_OFFSETS:
         raise ValueError("joint has no rotatable parent")
     points, angles = joints_at(project, entity, frame)
-    parent, offset = RIG_OFFSETS[joint]
+    parent, _ = rig_offsets(entity)[joint]
+    offset = segment_offset(entity, joint)
     assert parent is not None
     x, y = points[parent]
     dx, dy = target[0] - x, target[1] - y
