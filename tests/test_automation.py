@@ -110,7 +110,8 @@ def test_ai_cannot_edit_locked_layer():
     before = p.to_dict()
     with pytest.raises(ValueError, match="locked"):
         apply_patch(p, {"expected_revision": 0, "operations": [
-            {"op": "add_shape", "kind": "line", "a": [0, 0], "b": [4, 4]},
+            {"op": "add_shape", "kind": "line", "layer_id": "background",
+             "a": [0, 0], "b": [4, 4]},
         ]})
     assert p.to_dict() == before
 

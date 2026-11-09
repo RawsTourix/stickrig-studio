@@ -349,7 +349,7 @@ def test_random_reorder_and_delete_preserve_all_poses():
         p.validate()
 
 
-def test_blank_frame_preserves_background_but_hides_existing_actors():
+def test_blank_frame_has_no_inherited_background_or_actors():
     from stickrig.model import insert_blank_frame, visible_frame_indices
     from stickrig.render import visible_entities
     p = Project(width=320, height=180)
@@ -361,7 +361,7 @@ def test_blank_frame_preserves_background_but_hides_existing_actors():
     index = insert_blank_frame(p, 0)
     assert index == 1
     assert p.duration == 4
-    assert [e["kind"] for e in visible_entities(p, 1)] == ["line"]
+    assert list(visible_entities(p, 1)) == []
     assert {e["id"] for e in visible_entities(p, 2)} == {"hero", p.scene["entities"][0]["id"]}
     assert value_at(p, hero, "position", 3) == [210, 140]
     assert visible_frame_indices(p) == [0, 1, 2, 3]

@@ -30,7 +30,8 @@ def test_window_project_edit_save_and_reopen(tmp_path):
         w.path = path
         assert w.save_file()
         w.load_file(path)
-        assert len(w.project.scene["entities"]) == 1
+        assert len(w.project.scene["entities"]) == 2
+        assert {e["frame_index"] for e in w.project.scene["entities"]} == {0, 1}
         assert w.project.duration == 2
     finally:
         w.capture_workspace(force=True)
@@ -82,15 +83,14 @@ def test_preview_strip_and_frame_actions():
         hero = w.selected_id
         w.append_frame()
         w.append_frame()
-        set_key(w.project, hero, "pose.elbow_l", 1, 38)
+        second_id = next(e["id"] for e in w.project.scene["entities"]
+                         if e.get("frame_index") == 1)
+        set_key(w.project, second_id, "pose.elbow_l", 1, 38)
         w.after_change()
-        before = [value_at(w.project, get_entity(w.project, hero),
-                           "pose.elbow_l", i) for i in range(3)]
         w.move_frame_to(1, 2)
-        expected = before[:]
-        expected.insert(2, expected.pop(1))
-        assert [value_at(w.project, get_entity(w.project, hero),
-                         "pose.elbow_l", i) for i in range(3)] == expected
+        assert get_entity(w.project, second_id)["frame_index"] == 2
+        assert value_at(w.project, get_entity(w.project, second_id),
+                        "pose.elbow_l", 2) == 38
         w.toggle_frame_visibility(1)
         assert w.project.scene["hidden_frames"] == [1]
         w.toggle_play()
@@ -209,7 +209,10 @@ def test_graphicsgale_style_docks_and_blank_frame_button():
         assert value_at(w.project, get_entity(w.project, ident), "visible", 0)
         w.duplicate_frame_at(0)
         assert w.project.duration == 3
-        assert value_at(w.project, get_entity(w.project, ident), "visible", 1)
+        assert not value_at(w.project, get_entity(w.project, ident), "visible", 1)
+        copies = [e for e in w.project.scene["entities"] if e.get("frame_index") == 1]
+        assert len(copies) == 1
+        assert copies[0]["id"] != ident
         w.project.validate()
     finally:
         w.capture_workspace(force=True)
