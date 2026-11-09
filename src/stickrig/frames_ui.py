@@ -493,10 +493,14 @@ class FrameStrip(QListWidget):
         if local is None:
             local = self.viewport().mapFromGlobal(QCursor.pos())
         if dt_ms is None:
-            dt_ms = self._scroll_clock.restart()
+            if not self._scroll_clock.isValid():
+                self._scroll_clock.start()
+                dt_ms = 16
+            else:
+                dt_ms = max(16, self._scroll_clock.restart())
         dt = max(1.0, min(48.0, float(dt_ms)))
         rect = self.viewport().rect()
-        if not (-45 <= local.x() <= rect.width() + 45 or
+        if not (-45 <= local.x() <= rect.width() + 45 and
                 0 <= local.y() <= rect.height()):
             self._scroll_velocity = 0.0
             self._scroll_fraction = 0.0
