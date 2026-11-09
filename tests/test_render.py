@@ -91,3 +91,16 @@ def test_preview_frame_count_respects_hidden_flags(tmp_path):
     path = tmp_path / "hidden.json"
     save_project(p, path)
     assert visible_frame_indices(load_project(path)) == [0, 2]
+
+
+def test_blank_frame_renders_without_actor_but_keeps_background():
+    from stickrig.model import insert_blank_frame
+    p = Project(width=320, height=180)
+    p.scene["entities"].append(make_stickman(150, 130, entity_id="hero"))
+    p.scene["entities"].append(make_shape("line", [10, 155], [310, 155], layer_id="background"))
+    insert_blank_frame(p, 0)
+    original = render_image(p, 0, antialias=1)
+    blank = render_image(p, 1, antialias=1)
+    assert original.tobytes() != blank.tobytes()
+    assert blank.getpixel((150, 85)) == (255, 255, 255)
+    assert blank.getpixel((150, 155)) != (255, 255, 255)

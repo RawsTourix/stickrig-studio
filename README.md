@@ -29,7 +29,7 @@ Alternatively run `stickrig` or `stickrig-cli` after installation. Video export 
 
 For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-## Controls in v0.3
+## Controls in v0.4
 
 | Tool | Action |
 | --- | --- |
@@ -118,3 +118,5 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 ## Licensing and attribution
 
 No software license has yet been selected by the repository owner. References to historical animations and editors are used only to explain the product concept; no third-party video, music or protected assets are included.
+
+See [v0.4 layout and blank frames](docs/14-graphicsgale-workspace-v0.4.md) for the new dock behavior and visibility semantics.
