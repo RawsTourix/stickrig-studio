@@ -10,12 +10,12 @@ from __future__ import annotations
 SUPPORTED_LOCALES = ("en", "ru")
 
 MESSAGES = {
-    "frames.new_at_end": {"en": "New frame at end", "ru": "Новый кадр в конце"},
+    "frames.new_at_end": {"en": "New blank frame at end", "ru": "Новый пустой кадр в конце"},
     "frames.duplicate_current": {"en": "Duplicate current frame", "ru": "Дублировать текущий кадр"},
     "frames.show": {"en": "Show in playback", "ru": "Показывать при воспроизведении"},
     "frames.hide": {"en": "Hide from playback", "ru": "Скрыть при воспроизведении"},
     "frames.duplicate": {"en": "Duplicate frame", "ru": "Дублировать кадр"},
-    "frames.insert_after": {"en": "Insert frame after", "ru": "Вставить кадр после"},
+    "frames.insert_after": {"en": "Insert blank frame after", "ru": "Вставить пустой кадр после"},
     "frames.move_up": {"en": "Move frame up", "ru": "Переместить кадр выше"},
     "frames.move_down": {"en": "Move frame down", "ru": "Переместить кадр ниже"},
     "frames.delete": {"en": "Delete frame", "ru": "Удалить кадр"},

@@ -160,7 +160,7 @@ class FrameStrip(QListWidget):
         row = self._frame_at(event.pos())
         menu = QMenu(self)
         if row < 0:
-            menu.addAction(label("new_at_end"), self.editor.append_frame)
+            menu.addAction(label("new_at_end"), self.editor.append_blank_frame)
             menu.addSeparator()
             menu.addAction(label("duplicate_current"), self.editor.add_frame)
         else:
@@ -170,7 +170,7 @@ class FrameStrip(QListWidget):
             menu.addAction(label("show") if hidden else label("hide"),
                            lambda: self.editor.toggle_frame_visibility(row))
             menu.addAction(label("duplicate"), lambda: self.editor.duplicate_frame_at(row))
-            menu.addAction(label("insert_after"), lambda: self.editor.insert_frame_after(row))
+            menu.addAction(label("insert_after"), lambda: self.editor.insert_blank_frame_after(row))
             menu.addSeparator()
             above = menu.addAction(label("move_up"),
                                    lambda: self.editor.move_frame_to(row, row - 1))

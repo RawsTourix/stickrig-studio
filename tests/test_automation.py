@@ -154,3 +154,42 @@ def test_ai_frame_changes_rollback_on_error():
             {"op": "set_frame_hidden", "frame": 1, "hidden": True},
         ]})
     assert p.to_dict() == original
+
+
+def test_ai_blank_frame_creation_and_frame_scoped_actor():
+    from stickrig.model import value_at, get_entity
+    p = Project()
+    p.scene["entities"].append(make_stickman(120, 150, entity_id="hero"))
+    edited, report = apply_patch(p, {
+        "expected_revision": 0,
+        "operations": [
+            {"op": "insert_blank_frame", "after": 0},
+            {"op": "add_stickman", "id": "newhero", "position": [240, 150], "frame": 1},
+        ],
+    })
+    assert edited.duration == 2
+    assert value_at(edited, get_entity(edited, "hero"), "visible", 0)
+    assert not value_at(edited, get_entity(edited, "hero"), "visible", 1)
+    assert not value_at(edited, get_entity(edited, "newhero"), "visible", 0)
+    assert value_at(edited, get_entity(edited, "newhero"), "visible", 1)
+    assert p.duration == 1
+    assert report["after_revision"] == 1
+
+
+def test_ai_visibility_changes_are_atomic():
+    from stickrig.model import value_at, get_entity
+    p = Project()
+    p.scene["entities"].append(make_stickman(120, 150, entity_id="hero"))
+    edited, _ = apply_patch(p, {
+        "expected_revision": 0,
+        "operations": [{"op": "set_entity_visibility",
+                        "id": "hero", "frame": 0, "visible": False}],
+    })
+    assert not value_at(edited, get_entity(edited, "hero"), "visible", 0)
+    assert value_at(p, get_entity(p, "hero"), "visible", 0)
+    with pytest.raises(ValueError, match="visible"):
+        apply_patch(p, {
+            "expected_revision": 0,
+            "operations": [{"op": "set_entity_visibility",
+                            "id": "hero", "frame": 0, "visible": "yes"}],
+        })

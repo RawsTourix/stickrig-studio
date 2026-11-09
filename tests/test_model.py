@@ -347,3 +347,61 @@ def test_random_reorder_and_delete_preserve_all_poses():
         before.pop(deleted)
         assert states() == before
         p.validate()
+
+
+def test_blank_frame_preserves_background_but_hides_existing_actors():
+    from stickrig.model import insert_blank_frame, visible_frame_indices
+    from stickrig.render import visible_entities
+    p = Project(width=320, height=180)
+    p.scene["duration_frames"] = 3
+    p.scene["entities"].append(make_shape("line", [0, 130], [320, 130], layer_id="background"))
+    hero = make_stickman(120, 130, entity_id="hero")
+    p.scene["entities"].append(hero)
+    set_key(p, "hero", "position", 2, [210, 140])
+    index = insert_blank_frame(p, 0)
+    assert index == 1
+    assert p.duration == 4
+    assert [e["kind"] for e in visible_entities(p, 1)] == ["line"]
+    assert {e["id"] for e in visible_entities(p, 2)} == {"hero", p.scene["entities"][0]["id"]}
+    assert value_at(p, hero, "position", 3) == [210, 140]
+    assert visible_frame_indices(p) == [0, 1, 2, 3]
+    p.validate()
+
+
+def test_blank_insert_before_existing_visibility_keys_keeps_successor():
+    from stickrig.model import insert_blank_frame, move_frame, key_new_actor_visibility
+    p = Project()
+    p.scene["duration_frames"] = 4
+    hero = make_stickman(120, 130, entity_id="hero")
+    p.scene["entities"].append(hero)
+    set_key(p, "hero", "visible", 2, False)
+    set_key(p, "hero", "visible", 3, True)
+    old = [value_at(p, hero, "visible", f) for f in range(4)]
+    assert old == [True, True, False, True]
+    insert_blank_frame(p, 0)
+    assert [value_at(p, hero, "visible", f) for f in range(5)] == [True, False, True, False, True]
+    move_frame(p, 1, 3)
+    assert [value_at(p, hero, "visible", f) for f in range(5)] == [True, True, False, False, True]
+    p.validate()
+
+
+def test_new_actor_only_appears_at_creation_frame():
+    from stickrig.model import key_new_actor_visibility
+    p = Project()
+    p.scene["duration_frames"] = 3
+    hero = make_stickman(120, 130, entity_id="late")
+    p.scene["entities"].append(hero)
+    key_new_actor_visibility(p, "late", 2)
+    assert [value_at(p, hero, "visible", f) for f in range(3)] == [False, False, True]
+    p.validate()
+
+
+def test_invalid_visibility_tracks_are_rejected():
+    p = Project()
+    p.scene["entities"].append(make_stickman(120, 130, entity_id="hero"))
+    with pytest.raises(ValueError, match="visible"):
+        set_key(p, "hero", "visible", 0, 0)
+    set_key(p, "hero", "visible", 0, True)
+    p.scene["tracks"][0]["keyframes"][0]["value"] = "yes"
+    with pytest.raises(ValueError, match="visible"):
+        p.validate()

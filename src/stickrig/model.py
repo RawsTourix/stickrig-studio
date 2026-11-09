@@ -215,6 +215,8 @@ class Project:
             if e.get("kind") not in ("stickman", "line", "rectangle", "circle"):
                 raise ValueError(f"unsupported entity kind: {e.get('kind')}")
             _color(e.get("color"))
+            if type(e.get("visible", True)) is not bool:
+                raise ValueError("entity.visible must be boolean")
             sw = _number(e.get("stroke_width", 3), "stroke_width")
             if not 0.2 <= sw <= 80:
                 raise ValueError("stroke_width must be 0.2..80")
@@ -244,7 +246,9 @@ class Project:
             if not isinstance(prop, str):
                 raise ValueError("track property must be a string")
             entity = entity_by_id[target]
-            if prop == "position":
+            if prop == "visible":
+                pass  # All entities may have keyed visibility.
+            elif prop == "position":
                 if entity["kind"] != "stickman":
                     raise ValueError("position track is for stickmen only")
             elif prop.startswith("pose."):
@@ -270,6 +274,9 @@ class Project:
                     raise ValueError("prototype supports hold interpolation only")
                 if prop == "position":
                     _point(kf.get("value"), "keyframe.position")
+                elif prop == "visible":
+                    if type(kf.get("value")) is not bool:
+                        raise ValueError("keyframe.visible must be boolean")
                 else:
                     _number(kf.get("value"), "keyframe.angle")
                 prev = frame
@@ -312,7 +319,9 @@ def find_track(project: Project, entity_id: str, prop: str) -> dict[str, Any] | 
 
 
 def value_at(project: Project, entity: dict[str, Any], prop: str, frame: int) -> Any:
-    if prop == "position":
+    if prop == "visible":
+        base = entity.get("visible", True)
+    elif prop == "position":
         base = entity["position"]
     elif prop.startswith("pose."):
         base = entity.get("pose", {}).get(prop[5:], 0.0)
@@ -331,9 +340,12 @@ def set_key(project: Project, entity_id: str, prop: str, frame: int, value: Any)
     if type(frame) is not int or not 0 <= frame < project.duration:
         raise ValueError("frame out of range")
     entity = get_entity(project, entity_id)
-    if entity["kind"] != "stickman":
-        raise ValueError("only stickman properties are keyframable in prototype")
-    if prop == "position":
+    if prop == "visible":
+        if type(value) is not bool:
+            raise ValueError("visible must be boolean")
+    elif entity["kind"] != "stickman":
+        raise ValueError("only stickman pose/position are keyframable in prototype")
+    elif prop == "position":
         value = _point(value, prop)
     elif prop.startswith("pose.") and prop[5:] in RIG_OFFSETS and prop[5:] != "pelvis":
         value = _number(value, prop)
@@ -418,6 +430,43 @@ def insert_frame(project: Project, after: int) -> int:
     return after + 1
 
 
+def insert_blank_frame(project: Project, after: int) -> int:
+    """Insert an empty animation frame without erasing the persistent background.
+
+    In contrast to insert_frame() (duplicate/inherit), this explicitly hides
+    animated objects on the inserted frame. Existing keyframes and the next
+    frame's visibility are preserved. A newly placed actor can then be keyed
+    into the empty frame independently of preceding poses.
+
+    Background-layer items remain persistent; they are scene resources rather
+    than per-frame animation drawings.
+    """
+    if type(after) is not int or not 0 <= after < project.duration:
+        raise ValueError("cannot insert blank frame")
+    next_was = after + 1
+    old_next = {
+        e["id"]: value_at(project, e, "visible", next_was)
+        for e in project.scene["entities"] if e["layer_id"] != "background"
+    } if next_was < project.duration else {}
+    new_frame = insert_frame(project, after)
+    for e in project.scene["entities"]:
+        if e["layer_id"] == "background":
+            continue
+        set_key(project, e["id"], "visible", new_frame, False)
+        if new_frame + 1 < project.duration:
+            set_key(project, e["id"], "visible", new_frame + 1, old_next[e["id"]])
+    return new_frame
+
+
+def key_new_actor_visibility(project: Project, entity_id: str, frame: int) -> None:
+    """A newly created actor first appears in the authored frame, not earlier."""
+    if type(frame) is not int or not 0 <= frame < project.duration:
+        raise ValueError("frame out of range")
+    if frame:
+        set_key(project, entity_id, "visible", 0, False)
+        set_key(project, entity_id, "visible", frame, True)
+
+
 def visible_frame_indices(project: Project) -> list[int]:
     """Frames used by playback/export. Hiding never destroys a stored pose."""
     hidden = set(project.scene.get("hidden_frames", []))
@@ -454,7 +503,9 @@ def _remap_tracks(project: Project, new_duration: int, old_at_new, new_at_old,
         old_positions = [key["frame"] for key in keys]
         e = entities[track["target_id"]]
         prop = track["property"]
-        base = e["position"] if prop == "position" else e.get("pose", {}).get(prop[5:], 0.0)
+        base = (e.get("visible", True) if prop == "visible"
+                else e["position"] if prop == "position"
+                else e.get("pose", {}).get(prop[5:], 0.0))
 
         def old_value(idx: int):
             pos = bisect_right(old_positions, idx) - 1

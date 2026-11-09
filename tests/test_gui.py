@@ -178,3 +178,63 @@ def test_incremental_frame_badges_and_partial_viewport_update():
         w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
         w.close()
+
+
+def test_graphicsgale_style_docks_and_blank_frame_button():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QDockWidget
+    from stickrig.app import MainWindow
+    from stickrig.model import get_entity, value_at
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        assert w.canvas.zoom_hud.parentWidget() is w.canvas_info
+        assert w.canvas_info.objectName() == "canvas_info_bar"
+        assert w.playback_toolbar.objectName() == "playback_toolbar"
+        assert isinstance(w.playback_dock, QDockWidget)
+        assert w.dockWidgetArea(w.playback_dock) == Qt.DockWidgetArea.BottomDockWidgetArea
+        assert w.dockWidgetArea(w.library_dock) == Qt.DockWidgetArea.BottomDockWidgetArea
+        assert w.playback_dock in w._docks
+        assert w.playback_dock.toggleViewAction() in w.view_menu.actions()
+        assert w.frame_plus.text() == "+"
+        w.add_stickman((230, 280))
+        ident = w.selected_id
+        assert "X: 230.0" in w.selection_coords_label.text()
+        w.update_canvas_coordinates((12.5, 30.25))
+        assert "X: 12.5" in w.cursor_coords_label.text()
+        w.frame_plus.click()
+        assert w.project.duration == 2
+        assert not value_at(w.project, get_entity(w.project, ident), "visible", 1)
+        assert value_at(w.project, get_entity(w.project, ident), "visible", 0)
+        w.duplicate_frame_at(0)
+        assert w.project.duration == 3
+        assert value_at(w.project, get_entity(w.project, ident), "visible", 1)
+        w.project.validate()
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
+
+
+def test_playback_and_elements_can_swap_vertical_dock_order():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        w.show()
+        app.processEvents()
+        assert w.playback_dock.geometry().center().y() < w.library_dock.geometry().center().y()
+        w.splitDockWidget(w.library_dock, w.playback_dock, Qt.Orientation.Vertical)
+        app.processEvents()
+        assert w.playback_dock.geometry().center().y() > w.library_dock.geometry().center().y()
+        w.splitDockWidget(w.playback_dock, w.library_dock, Qt.Orientation.Vertical)
+        app.processEvents()
+        assert w.playback_dock.geometry().center().y() < w.library_dock.geometry().center().y()
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
