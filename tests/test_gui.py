@@ -412,7 +412,7 @@ def test_inspector_edits_joint_length_and_bend_and_line_curvature():
         assert math.dist(second["hip_l"], second["knee_l"]) < (
             math.dist(first["hip_l"], first["knee_l"]))
         w.undo()
-        assert get_entity(w.project, hero_id)["segment_bends"].get("knee_l", 0) == 0
+        assert get_entity(w.project, hero_id).get("segment_bends", {}).get("knee_l", 0) == 0
         w.redo()
         assert get_entity(w.project, hero_id)["segment_bends"]["knee_l"] == 0.25
 
@@ -424,6 +424,26 @@ def test_inspector_edits_joint_length_and_bend_and_line_curvature():
         assert get_entity(w.project, line_id)["bend"] == -0.4
         w.select_entity(None)
         assert w.segment_box.isHidden()
+    finally:
+        w.capture_workspace(force=True)
+        w.saved_snapshot = w.project.to_dict()
+        w.close()
+
+
+def test_select_line_endpoints_for_staff_length_and_rotation():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from stickrig.app import MainWindow
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    try:
+        w.add_shape("line", (100, 160), (240, 160))
+        line_id = w.selected_id
+        w.select_tool("select")
+        assert w.canvas._pick((100, 160)) == (line_id, "a")
+        assert w.canvas._pick((240, 160)) == (line_id, "b")
+        assert w.canvas._pick((170, 160)) == (line_id, None)
+        assert w.canvas._pick((170, 160), segment=True) == (line_id, None)
     finally:
         w.capture_workspace(force=True)
         w.saved_snapshot = w.project.to_dict()
