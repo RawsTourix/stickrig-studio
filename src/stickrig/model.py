@@ -98,6 +98,7 @@ class Project:
                 ],
                 "entities": [],
                 "tracks": [],
+                "hidden_frames": [],
             }
 
     @property
@@ -172,6 +173,11 @@ class Project:
         duration = s.get("duration_frames")
         if type(duration) is not int or not 1 <= duration <= 100_000:
             raise ValueError("duration_frames must be 1..100000")
+        hidden = s.get("hidden_frames", [])
+        if (not isinstance(hidden, list) or
+                any(type(f) is not int or f < 0 or f >= duration for f in hidden) or
+                len(hidden) != len(set(hidden)) or hidden != sorted(hidden)):
+            raise ValueError("hidden_frames must be sorted unique frame indices")
         cam = s.get("camera", {})
         if not isinstance(cam, dict):
             raise ValueError("camera must be an object")
@@ -405,6 +411,12 @@ def insert_frame(project: Project, after: int) -> int:
         for key in track["keyframes"]:
             if key["frame"] > after:
                 key["frame"] += 1
+    hidden = project.scene.setdefault("hidden_frames", [])
+    # Duplicated frame inherits the source visibility; later positions shift.
+    project.scene["hidden_frames"] = sorted(
+        [f + 1 if f > after else f for f in hidden] +
+        ([after + 1] if after in hidden else [])
+    )
     project.scene["duration_frames"] += 1
     return after + 1
 
@@ -418,8 +430,119 @@ def delete_frame(project: Project, frame: int) -> int:
         for k in t["keyframes"]:
             if k["frame"] > frame:
                 k["frame"] -= 1
+    project.scene["hidden_frames"] = [
+        f - 1 if f > frame else f
+        for f in project.scene.get("hidden_frames", []) if f != frame
+    ]
     project.scene["duration_frames"] -= 1
     return min(frame, project.duration - 1)
+
+
+def playable_frames(project: Project) -> list[int]:
+    """Frame indices included in preview playback and video export.
+
+    Hidden frames remain editable but are omitted from both timelines.
+    """
+    hidden = set(project.scene.get("hidden_frames", []))
+    return [f for f in range(project.duration) if f not in hidden]
+
+
+def toggle_frame_hidden(project: Project, frame: int) -> bool:
+    """Toggle a frame's playback/export visibility; return new hidden state."""
+    if type(frame) is not int or not 0 <= frame < project.duration:
+        raise ValueError("frame out of range")
+    hidden = set(project.scene.get("hidden_frames", []))
+    if frame in hidden:
+        hidden.remove(frame)
+        is_hidden = False
+    else:
+        hidden.add(frame)
+        is_hidden = True
+    project.scene["hidden_frames"] = sorted(hidden)
+    return is_hidden
+
+
+def _reordered_frame_index(frame: int, source: int, destination: int) -> int:
+    if frame == source:
+        return destination
+    if source < destination and source < frame <= destination:
+        return frame - 1
+    if destination <= frame < source:
+        return frame + 1
+    return frame
+
+
+def move_frame(project: Project, source: int, destination: int) -> None:
+    """Reorder a whole authored pose without flattening the project's tracks.
+
+    Hold-keyframe channels are sparse. Reconstruct only *change boundaries*
+    around the moved span, preserving values and unaffected sections. This
+    avoids a full per-frame/keyframe copy for long animation timelines.
+    """
+    if (type(source) is not int or type(destination) is not int or
+            not 0 <= source < project.duration or
+            not 0 <= destination < project.duration):
+        raise ValueError("frame out of range")
+    if source == destination:
+        return
+    start, end = sorted((source, destination))
+    by_id = {entity["id"]: entity for entity in project.scene["entities"]}
+    for track in project.scene["tracks"]:
+        keys = track["keyframes"]
+        if not keys:
+            continue
+        entity = by_id[track["target_id"]]
+        prop = track["property"]
+        base = entity["position"] if prop == "position" else entity.get("pose", {}).get(prop[5:], 0.0)
+        original_keys = [(k["frame"], k["value"]) for k in keys]
+
+        def old_at(frame: int):
+            value = base
+            for at, v in original_keys:
+                if at > frame:
+                    break
+                value = v
+            return value
+
+        def new_at(frame: int):
+            if source < destination:
+                mapped = frame + 1 if source <= frame < destination else (
+                    source if frame == destination else frame
+                )
+            else:
+                mapped = source if frame == destination else (
+                    frame - 1 if destination < frame <= source else frame
+                )
+            return old_at(mapped)
+
+        # Every possible discontinuity is an original key boundary or a
+        # one-frame shifted boundary. Check only those, not all frame indices.
+        right = min(project.duration - 1, end + 1)
+        candidate = {start, end, right}
+        for at, _ in original_keys:
+            if start - 1 <= at <= right + 1:
+                for trial in (at - 1, at, at + 1):
+                    if start <= trial <= right:
+                        candidate.add(trial)
+        candidate.update(f for f in (source, destination) if start <= f <= right)
+        previous = old_at(start - 1) if start else base
+        replacement = []
+        for frame in sorted(candidate):
+            current = new_at(frame)
+            if current != previous:
+                replacement.append({"frame": frame, "value": copy.deepcopy(current),
+                                    "interpolation": "hold"})
+            previous = current
+        track["keyframes"] = (
+            [k for k in keys if k["frame"] < start] +
+            replacement +
+            [k for k in keys if k["frame"] > right]
+        )
+
+    project.scene["hidden_frames"] = sorted(
+        _reordered_frame_index(f, source, destination)
+        for f in project.scene.get("hidden_frames", [])
+    )
 
 
 def save_project(project: Project, path: str | Path) -> None:
