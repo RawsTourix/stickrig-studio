@@ -19,6 +19,21 @@ from stickrig.model import (
 _QT_APP = None  # Keep QApplication stable across all tests in this module.
 
 
+@pytest.fixture(scope="module", autouse=True)
+def release_qt_before_interpreter_shutdown():
+    """Destroy Qt objects while PySide6 is still fully loaded, not at exit."""
+    yield
+    global _QT_APP
+    if _QT_APP is not None:
+        _QT_APP.closeAllWindows()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        _QT_APP.processEvents()
+        _QT_APP.quit()
+        _QT_APP = None
+    import gc
+    gc.collect()
+
+
 def prepare_window():
     from stickrig.app import MainWindow
     global _QT_APP
