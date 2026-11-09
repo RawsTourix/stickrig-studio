@@ -390,7 +390,7 @@ class Canvas(QGraphicsView):
                 self._render_entity(demo, self.editor.frame, z=60, opacity=0.5)
         self.update_placement_preview()
 
-    def _pick(self, point: tuple[float, float], *, segment=False):
+    def _pick(self, point: tuple[float, float], *, segment=False, cycle=True):
         """Choose the nearest handle, not the first joint in rig order.
 
         At small viewport zoom the hit radii of knees/ankles can overlap.
@@ -447,7 +447,7 @@ class Canvas(QGraphicsView):
             nearest = handles[0][0]
             similar = [hit for hit in handles if hit[0] <= nearest + near_equal_radius]
             current = (self.editor.selected_id, self.editor.selected_joint)
-            if len(similar) > 1 and (similar[0][2], similar[0][3]) == current:
+            if cycle and len(similar) > 1 and (similar[0][2], similar[0][3]) == current:
                 for hit in similar[1:]:
                     if (hit[2], hit[3]) != current:
                         return hit[2], hit[3]
@@ -493,6 +493,33 @@ class Canvas(QGraphicsView):
             else:
                 self.drag_origin = (0.0, 0.0)
         self.redraw()
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        """Double-click a joint handle to restore its original segment length.
+
+        Hit-test in un-snapped world coordinates and never reset a segment by
+        double-clicking empty space, a stickman's line, or another shape.
+        Bypass repeated-click selection cycling for this precise gesture.
+        """
+        if (event.button() != Qt.MouseButton.LeftButton or
+                self.editor.playing or self.editor.tool != "select"):
+            return super().mouseDoubleClickEvent(event)
+        ident, joint = self._pick(self.to_world(event), cycle=False)
+        if ident is None or joint is None:
+            return super().mouseDoubleClickEvent(event)
+        entity = get_entity(self.editor.project, ident)
+        if (entity["kind"] != "stickman" or
+                joint == "pelvis" or
+                math.hypot(*rig_offsets(entity)[joint][1]) < 1e-6):
+            event.accept()
+            return
+        # Qt delivers the second mouse-press before its double-click event.
+        # Do not leave that press's unfinished drag transaction active.
+        self.drag_id = self.drag_joint = self.drag_start = None
+        self.drag_origin = self.drag_before = None
+        self.editor.select_entity(ident, joint)
+        self.editor.reset_selected_length()
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -730,10 +757,6 @@ class MainWindow(QMainWindow):
         self.segment_length.setSuffix(" %")
         self.segment_length.valueChanged.connect(self.change_segment_length)
         segment_layout.addWidget(self.segment_length)
-        self.reset_length_button = QPushButton("Reset length to 100%", self.segment_box)
-        self.reset_length_button.setToolTip("Restore the selected limb's default length")
-        self.reset_length_button.clicked.connect(self.reset_selected_length)
-        segment_layout.addWidget(self.reset_length_button)
         segment_layout.addWidget(QLabel("Curve / bend"))
         self.segment_bend_spin = QDoubleSpinBox(self.segment_box)
         self.segment_bend_spin.setRange(-100, 100)
@@ -1348,16 +1371,20 @@ class MainWindow(QMainWindow):
             self.canvas.refresh_grid()
 
     def reset_selected_length(self):
+        """Undoable exact rest-length reset, invoked by double-clicking a joint."""
         if not self.selected_id or not self.selected_joint:
             return
         entity = get_entity(self.project, self.selected_id)
-        if entity["kind"] != "stickman" or self.selected_joint == "pelvis":
+        if (entity["kind"] != "stickman" or self.selected_joint == "pelvis" or
+                math.hypot(*rig_offsets(entity)[self.selected_joint][1]) < 1e-6):
             return
         joint = self.selected_joint
         if abs(entity.get("segment_scales", {}).get(joint, 1.0) - 1.0) > 1e-9:
             self.mutate(lambda: set_segment_scale(entity, joint, 1.0))
         else:
+            self.segment_length.blockSignals(True)
             self.segment_length.setValue(100)
+            self.segment_length.blockSignals(False)
 
     def change_segment_length(self, value):
         if not self.selected_id or not self.selected_joint:
@@ -1408,7 +1435,6 @@ class MainWindow(QMainWindow):
             values = (e.get("segment_scales", {}).get(joint, 1.0) * 100,
                       e.get("segment_bends", {}).get(joint, 0) * 100) if e["kind"] == "stickman" else (100, e.get("bend", 0) * 100)
             self.segment_length.setEnabled(e["kind"] == "stickman")
-            self.reset_length_button.setVisible(e["kind"] == "stickman")
             for control, value in ((self.segment_length, values[0]),
                                    (self.segment_bend_spin, values[1])):
                 control.blockSignals(True)
