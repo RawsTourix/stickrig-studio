@@ -11,7 +11,7 @@ import sys
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QSettings
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
@@ -118,6 +118,7 @@ class Canvas(QGraphicsView):
                               width + 80, height + 80),
                        Qt.AspectRatioMode.KeepAspectRatio)
         self.update_zoom_label()
+        self.refresh_grid()
 
     def update_zoom_label(self):
         # Viewport zoom is separate from the project's camera zoom.
@@ -128,6 +129,7 @@ class Canvas(QGraphicsView):
         if 0.05 <= old * multiplier <= 12:
             self.scale(multiplier, multiplier)
             self.update_zoom_label()
+            self.refresh_grid()
 
     @staticmethod
     def pan_sensitivity(view_scale: float) -> float:
@@ -293,7 +295,12 @@ class Canvas(QGraphicsView):
                                   1.5, "#ffffff", z=50)
 
     def drawBackground(self, painter, rect):
-        """Vector world-pixel grid without allocating a graphics item per line."""
+        """Paint the world-aligned vector grid over the entire editor workspace.
+
+        The white paper is only a camera/output boundary. Off-camera objects
+        remain editable, and the grid continues behind them. No per-cell Qt
+        graphics items are created. Grid spacing is always in *scene pixels*.
+        """
         super().drawBackground(painter, rect)
         project = self.editor.project
         camera = project.scene["camera"]
@@ -306,27 +313,47 @@ class Canvas(QGraphicsView):
         painter.fillRect(paper, QColor("#ffffff"))
         settings = grid_settings(project)
         if settings["enabled"] and settings["visible"]:
-            painter.setClipRect(paper)
             step = settings["spacing"]
-            scale = max(0.05, abs(self.transform().m11()))
-            display_step = step * max(1, math.ceil(6 / (step * scale)))
-            for axis in (0, 1):
-                lo = left if axis == 0 else top
-                span = width if axis == 0 else height
-                for i in range(math.floor(lo / display_step),
-                               math.ceil((lo + span) / display_step) + 1):
-                    coord = i * display_step
-                    painter.setPen(QPen(QColor("#c5cfdd" if i % 5 == 0 else "#e7ebf2"),
-                                        0.9 if i % 5 == 0 else 0.5))
-                    if axis == 0:
-                        painter.drawLine(QPointF(coord, top), QPointF(coord, top + height))
-                    else:
-                        painter.drawLine(QPointF(left, coord), QPointF(left + width, coord))
-            painter.setClipping(False)
-        painter.setPen(QPen(QColor("#3d485b"), 2.0))
+            # Hide excessive fine detail only at tiny zoom values. Snap always
+            # uses the full step irrespective of this visual LOD.
+            scale = max(0.01, abs(self.transform().m11()))
+            stride = max(1, math.ceil(6.0 / (step * scale)))
+            displayed_step = step * stride
+            # Only traverse the actual exposed scene rectangle, not the full
+            # 6000x6000 scene or camera. This stays fast even at 1 px spacing.
+            x_start = math.floor(rect.left() / displayed_step)
+            x_end = math.ceil(rect.right() / displayed_step)
+            y_start = math.floor(rect.top() / displayed_step)
+            y_end = math.ceil(rect.bottom() / displayed_step)
+            pen_minor = QPen(QColor("#d0d8e2"), 0)
+            pen_major = QPen(QColor("#9daec2"), 0)
+            pen_minor.setCosmetic(True)
+            pen_major.setCosmetic(True)
+            for i in range(x_start, x_end + 1):
+                painter.setPen(pen_major if (i * stride) % 5 == 0 else pen_minor)
+                x = i * displayed_step
+                painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            for i in range(y_start, y_end + 1):
+                painter.setPen(pen_major if (i * stride) % 5 == 0 else pen_minor)
+                y = i * displayed_step
+                painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+        # Border is drawn last so it remains unambiguous when grid is visible.
+        border = QPen(QColor("#3d485b"), 2)
+        border.setCosmetic(True)
+        painter.setPen(border)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(paper)
         painter.restore()
+
+    def refresh_grid(self):
+        """Force viewport/background repaint after grid or zoom changes.
+
+        QGraphicsScene.clear() only invalidates item regions in MinimalViewport
+        mode, so a background-only preference change needs explicit invalidation.
+        """
+        self.graphics.invalidate(self.graphics.sceneRect(),
+                                 QGraphicsScene.SceneLayer.BackgroundLayer)
+        self.viewport().update()
 
     def redraw(self) -> None:
         self.graphics.clear()
@@ -395,7 +422,8 @@ class Canvas(QGraphicsView):
             return
         if event.button() != Qt.MouseButton.LeftButton or self.editor.playing:
             return super().mousePressEvent(event)
-        point = self.snap(self.to_world(event))
+        raw_point = self.to_world(event)
+        point = self.snap(raw_point)
         tool = self.editor.tool
         if tool == "stickman":
             self.editor.add_stickman(point)
@@ -406,7 +434,7 @@ class Canvas(QGraphicsView):
             self.redraw()
             return
         eid, joint = self._pick(
-            point, segment=bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+            raw_point, segment=bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
         )
         self.editor.select_entity(eid, joint)
         if eid:
@@ -524,6 +552,10 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.advance_frame)
         self.setWindowTitle("StickRig Studio")
         self.resize(1380, 850)
+        # Application-level window state is intentionally independent of each
+        # project's QMainWindow dock layout (which lives in the project JSON).
+        self._window_settings = QSettings("RawsTourix", "StickRig Studio")
+        self._restore_maximized = False
         self._docks = []
         self._restoring_layout = False
         self._thumb_epoch = 0
@@ -538,6 +570,7 @@ class MainWindow(QMainWindow):
         self.refresh()
         if not path:
             self.restore_workspace()
+        self.restore_window_state()
         QTimer.singleShot(0, self.canvas.frame_camera)
 
     def build_ui(self):
@@ -806,6 +839,23 @@ class MainWindow(QMainWindow):
             dock.dockLocationChanged.connect(lambda _: self.schedule_layout_capture())
             dock.topLevelChanged.connect(lambda _: self.schedule_layout_capture())
             dock.visibilityChanged.connect(lambda _: self.schedule_layout_capture())
+
+    def restore_window_state(self):
+        """Restore size, screen position and maximize preference across launches."""
+        geometry = self._window_settings.value("window/geometry")
+        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
+            self.restoreGeometry(geometry)
+        self._restore_maximized = self._window_settings.value(
+            "window/maximized", False, type=bool
+        )
+        if self._restore_maximized:
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+
+    def persist_window_state(self):
+        """Persist only on successful close; a cancelled close writes nothing."""
+        self._window_settings.setValue("window/geometry", self.saveGeometry())
+        self._window_settings.setValue("window/maximized", self.isMaximized())
+        self._window_settings.sync()
 
     def make_dock(self, title, name, content, area):
         dock = QDockWidget(title, self)
@@ -1161,6 +1211,7 @@ class MainWindow(QMainWindow):
             self.refresh_layers()
         self.refresh_frames(content_changed=content_changed)
         self.canvas.redraw()
+        self.canvas.refresh_grid()
         self.update_canvas_coordinates(self._cursor_world)
         self.refresh_title()
 
@@ -1174,7 +1225,7 @@ class MainWindow(QMainWindow):
         if grid_settings(self.project) != new:
             self.mutate(lambda: self.project.scene.__setitem__("grid", new))
         else:
-            self.canvas.redraw()
+            self.canvas.refresh_grid()
 
     def change_segment_length(self, value):
         if not self.selected_id or not self.selected_joint:
@@ -1557,6 +1608,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.capture_workspace(force=True)
         if self.check_unsaved():
+            self.persist_window_state()
             event.accept()
         else:
             event.ignore()
@@ -1565,7 +1617,10 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     window = MainWindow(sys.argv[1] if len(sys.argv) > 1 else None)
-    window.show()
+    if window._restore_maximized:
+        window.showMaximized()
+    else:
+        window.show()
     return app.exec()
 
 
