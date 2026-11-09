@@ -337,6 +337,8 @@ def find_track(project: Project, entity_id: str, prop: str) -> dict[str, Any] | 
 
 def value_at(project: Project, entity: dict[str, Any], prop: str, frame: int) -> Any:
     if prop == "visible":
+        if "frame_index" in entity and entity["frame_index"] != frame:
+            return False
         base = entity.get("visible", True)
     elif prop == "position":
         base = entity["position"]
