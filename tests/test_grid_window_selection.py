@@ -6,7 +6,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPointF, QSettings, Qt
+from PySide6.QtCore import QEvent, QPointF, QSettings, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -31,6 +31,11 @@ def close_unmodified(window):
     window.capture_workspace(force=True)
     window.saved_snapshot = window.project.to_dict()
     window.close()
+    # Releasing Qt wrappers explicitly before interpreter finalization prevents
+    # dangling QSettings/QGraphicsView lifetimes in the offscreen test process.
+    window._window_settings = None
+    window.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_window_geometry_and_maximize_survive_clean_restart(monkeypatch, tmp_path):
