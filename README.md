@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.4.1 prototype (smoother frame dragging, dockable workspace, and AI-friendly editing).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.4.2 prototype (independent frame content and stable drag thresholds).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -36,15 +36,15 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | `+ Stickman` | Click the canvas to add a basic stickman |
 | `Select / Move` | Drag a blue joint handle to pose a limb; drag a bone to move the whole figure |
 | `Line`, `Rectangle`, `Ellipse` | Click-drag to draw editable simple shapes |
-| `+ Copy next` | Insert a frame after the current frame; inherit the current pose |
-| `Delete frame` | Delete the current animation frame |
+| `+` under Frames | Insert a **completely empty** frame after the current one; do not inherit objects or a background |
+| Duplicate frame (`Ctrl+D` or copy button) | Create an **independent editable copy** of the current frame's stickmen and shapes |\n| `Delete frame` | Delete the current animation frame |
 | `Onion skin` | Show translucent pose from the previous frame (without ghosting static background) |
 | `▶ Play` | Preview animation with the selected FPS |
 | `Frame camera` (`Ctrl+0`) | Recenter the canvas view on the camera frame |
 | Two-finger touchpad swipe / wheel / middle mouse | Pan with zoom-dependent sensitivity: zoomed-in movement is more precise, zoomed-out movement travels faster. **Ctrl+wheel/scroll** zooms around cursor |
 | `Grid`, `Snap (10)` | Toggle viewport grid and 10-unit position snapping |
 | Inspector, Layers, Camera | Independent dock panels. Drag title bars, resize, tabify, float or hide; reopen from **View** menu |
-| **Frames** sidebar | Right-click for actions; eye/duplicate/trash quick buttons at the bottom of each card. Drag from the **right dotted grip**: a translucent card follows the pointer, nearby frames slide aside, a purple insertion line marks the destination, and holding near an edge auto-scrolls. |
+| **Frames** sidebar | Right-click for actions; eye/duplicate/trash quick buttons at the bottom of each card. Drag from the **right dotted grip**: a translucent card follows the pointer, **only the crossed neighboring cards** slide aside after their center-point threshold, a purple insertion line marks the destination, and holding near an edge auto-scrolls. |
 | **Elements** panel | Select an element to see a translucent preview under the cursor before placing it in the scene |
 | **Playback strip** | Compact independent toolbar at the bottom of the window: frame navigation, play/pause and FPS |
 | **Zoom controls** | Lower-right overlay on the canvas shows current **viewport zoom percentage** with −, +, Fit; it is independent of camera zoom |
@@ -53,6 +53,8 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 | `←`, `→`, `Space`, `Ctrl+D` | Previous/next frame, play/pause, insert duplicate hold frame |
 
 **Performance:** only visible frame thumbnails are rasterized directly at 128-pixel width. A lightweight item delegate paints quick buttons without creating separate widgets per frame. During reordering, only visible rows participate in Qt animations with continuous 16ms retargeting and a smoothed insertion marker. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.
+
+**Frame content:** new stickmen and shapes belong only to the frame where they were created. They do **not** automatically become background objects or appear in adjacent frames. An explicit duplicate makes new object IDs; the + button makes a blank frame. For compatibility, older files with objects lacking `frame_index` retain their historical global/held behavior. This old information cannot be inferred safely: use a new project to verify the new default or explicitly clean up a legacy project. Onion skin and the translucent placement preview are editor overlays, not extra saved objects.
 
 **Frame visibility:** hidden frames remain editable and in the Frames panel, but are excluded from playback and MP4 export. At least one frame must remain visible; hiding and moving frames are undoable. Frame indices in JSON/CLI are zero-based, while the GUI labels frames from 1.
 
@@ -83,9 +85,9 @@ python -m stickrig.cli render new-project.stickrig.json --frame 0 --output previ
 python -m stickrig.cli export new-project.stickrig.json --output result.mp4
 ```
 
-Patch JSON is `{ "expected_revision": 0, "operations": [...] }`. Allowed operations: `add_stickman`, `add_shape`, `set_color`, `set_position`, `set_joint_angle`, `set_layer_visibility`, `set_camera`, `delete_entity`, `insert_frame`, `delete_frame`, `move_frame`, `set_frame_hidden`. Frame structure operations are rejected if any layer is locked. Validation rejects unknown references, duplicate IDs, non-finite coordinates, out-of-range frames and changes to locked layers. Stale revisions are rejected and invalid batches leave the original intact. To update the source directly, add the explicit `--in-place` flag.
+Patch JSON is `{ "expected_revision": 0, "operations": [...] }`. Allowed operations: `add_stickman`, `add_shape`, `set_color`, `set_position`, `set_joint_angle`, `set_layer_visibility`, `set_camera`, `delete_entity`, `insert_frame`, `insert_blank_frame`, `delete_frame`, `move_frame`, `set_frame_hidden`. Frame structure operations are rejected if any layer is locked. Validation rejects unknown references, duplicate IDs, non-finite coordinates, out-of-range frames and changes to locked layers. Stale revisions are rejected and invalid batches leave the original intact. To update the source directly, add the explicit `--in-place` flag.
 
-**MCP status:** not implemented yet. CLI and JSON are the first integration layer; an MCP adapter can be built on the same functions after practical tests.
+New `add_stickman` and `add_shape` operations accept an optional zero-based `frame` (default 0); frame-local is the default. Explicit `persistent: true` is reserved for intentional global resources, with no automatic promotion of ordinary shapes to a background.\n\n**MCP status:** not implemented yet. CLI and JSON are the first integration layer; an MCP adapter can be built on the same functions after practical tests.
 
 ## Project structure
 
@@ -131,7 +133,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [15 — Animated frame drag](docs/15-animated-frames-drag-v0.4.md) | Drag ghost, moving neighbors, insertion marker, auto-scroll and snap |
 | [16 — Drag smoothing](docs/16-smooth-frame-drag-v0.4.1.md) | Retargetable animation, anti-jitter insertion and scroll smoothing |
 
-## Licensing and attribution
+See [frame-local content and drag thresholds](docs/17-frame-local-content-v0.4.2.md) for v0.4.2's behavior and legacy-file compatibility.\n\n## Licensing and attribution
 
 No software license has yet been selected by the repository owner. References to historical animations and editors are used only to explain the product concept; no third-party video, music or protected assets are included.
 
