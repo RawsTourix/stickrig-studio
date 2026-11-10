@@ -67,6 +67,15 @@ class Canvas(QGraphicsView):
         self.drag_start: tuple[float, float] | None = None
         self.drag_origin: tuple[float, float] | None = None
         self.drag_before = None
+        self.marquee_start = self.marquee_end = None
+        self.marquee_previous: set[str] = set()
+        self.marquee_modifiers = Qt.KeyboardModifier.NoModifier
+        self._group_drag_origins = None
+        self._group_drag_bounds = None
+        self._group_drag_start = None
+        self._group_drag_started = False
+        self._paste_clipboard = None
+        self._paste_top_left = None
         self.shape_start: tuple[float, float] | None = None
         self.shape_end: tuple[float, float] | None = None
         self.panning = False
@@ -189,6 +198,42 @@ class Canvas(QGraphicsView):
             if item.scene() is self.graphics:
                 self.graphics.removeItem(item)
         self._preview_items.clear()
+
+    def start_paste_preview(self, clipboard):
+        """Cursor-anchored paste, with a visible-centre fallback off canvas."""
+        self._paste_clipboard = copy.deepcopy(clipboard)
+        if self._hover_position is not None:
+            anchor = self._hover_position
+        else:
+            centre = self.mapToScene(self.viewport().rect().center())
+            anchor = (centre.x(), centre.y())
+        self._paste_top_left = self.snap(anchor)
+        self.redraw()
+
+    def cancel_paste(self):
+        self._paste_clipboard = None
+        self._paste_top_left = None
+        self.redraw()
+
+    def render_paste_preview(self):
+        if self._paste_clipboard is None or self._paste_top_left is None:
+            return
+        dx = self._paste_top_left[0] - self._paste_clipboard["bounds"][0]
+        dy = self._paste_top_left[1] - self._paste_clipboard["bounds"][1]
+        for source in self._paste_clipboard["entities"]:
+            ghost = copy.deepcopy(source)
+            if ghost["kind"] == "stickman":
+                ghost["position"] = [ghost["position"][0] + dx,
+                                     ghost["position"][1] + dy]
+            else:
+                ghost["a"] = [ghost["a"][0] + dx, ghost["a"][1] + dy]
+                ghost["b"] = [ghost["b"][0] + dx, ghost["b"][1] + dy]
+            self._render_entity(ghost, self.editor.frame, z=90,
+                                opacity=0.40, ghost=True)
+        box = self._paste_clipboard["bounds"]
+        self._rect((self._paste_top_left[0], self._paste_top_left[1],
+                    box[2] - box[0], box[3] - box[1]),
+                   "#2d84cc", 1.5, z=100, opacity=0.72)
 
     def update_placement_preview(self):
         self.clear_placement_preview()
@@ -392,8 +437,25 @@ class Canvas(QGraphicsView):
                 demo = make_shape(kind, list(self.shape_start), list(self.shape_end))
                 self._render_entity(demo, self.editor.frame, z=60, opacity=0.5)
         self.update_placement_preview()
+        if len(self.editor.selected_ids) > 1 and not self.editor.playing:
+            try:
+                left, top, right, bottom = selection_bounds(
+                    self.editor.project, self.editor.frame, self.editor.selected_ids)
+                self._rect((left - 7, top - 7, right - left + 14, bottom - top + 14),
+                           "#2679bf", 1.6, z=74)
+            except ValueError:
+                pass
+        if self.marquee_start is not None and self.marquee_end is not None:
+            x1, y1 = self.marquee_start
+            x2, y2 = self.marquee_end
+            rectangle = QRectF(QPointF(x1, y1), QPointF(x2, y2)).normalized()
+            pen = QPen(QColor("#2679bf"), 1.2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self.graphics.addRect(rectangle, pen,
+                                  QBrush(QColor(50, 145, 230, 36))).setZValue(120)
+        self.render_paste_preview()
 
-    def _pick(self, point: tuple[float, float], *, segment=False, cycle=True):
+    def _pick(self, point: tuple[float, float], *, segment=False, cycle=True, handles=True):
         """Choose the nearest handle, not the first joint in rig order.
 
         At small viewport zoom the hit radii of knees/ankles can overlap.
@@ -412,7 +474,7 @@ class Canvas(QGraphicsView):
             ident = e["id"]
             if e["kind"] == "stickman":
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
-                if not segment:
+                if not segment and handles:
                     for joint, xy in points.items():
                         if (e.get("rig_style") == "simple" and
                                 joint in SIMPLE_HIDDEN_LINKS and joint != "head"):
@@ -428,7 +490,7 @@ class Canvas(QGraphicsView):
                         bodies.append((distance, order, ident,
                                        joint if segment else None))
             elif e["kind"] == "line":
-                if not segment:
+                if not segment and handles:
                     for endpoint in ("a", "b"):
                         distance = math.dist(point, e[endpoint])
                         if distance <= radius:
