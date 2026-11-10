@@ -12,7 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QSettings
-from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QBrush, QCursor, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
     QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -32,6 +32,9 @@ from .model import (History, Project, RIG_OFFSETS, SIMPLE_HIDDEN_LINKS,
                     stickman_strokes, value_at)
 from .render import export_mp4, render_image, visible_entities
 from .frames_ui import FrameStrip
+from .selection import (copy_entities, entity_bounds, ids_in_rectangle,
+                        materialize_paste, move_from_origins, selection_bounds,
+                        transform_origins)
 from .model import move_frame, set_frame_hidden, visible_frame_indices
 
 
@@ -64,6 +67,15 @@ class Canvas(QGraphicsView):
         self.drag_start: tuple[float, float] | None = None
         self.drag_origin: tuple[float, float] | None = None
         self.drag_before = None
+        self.marquee_start = self.marquee_end = None
+        self.marquee_previous: set[str] = set()
+        self.marquee_modifiers = Qt.KeyboardModifier.NoModifier
+        self._group_drag_origins = None
+        self._group_drag_bounds = None
+        self._group_drag_start = None
+        self._group_drag_started = False
+        self._paste_clipboard = None
+        self._paste_top_left = None
         self.shape_start: tuple[float, float] | None = None
         self.shape_end: tuple[float, float] | None = None
         self.panning = False
@@ -186,6 +198,47 @@ class Canvas(QGraphicsView):
             if item.scene() is self.graphics:
                 self.graphics.removeItem(item)
         self._preview_items.clear()
+
+    def start_paste_preview(self, clipboard):
+        """Cursor-anchored paste, with a visible-centre fallback off canvas."""
+        self._paste_clipboard = copy.deepcopy(clipboard)
+        mouse_pos = self.viewport().mapFromGlobal(QCursor.pos())
+        if self.viewport().rect().contains(mouse_pos):
+            cursor = self.mapToScene(mouse_pos)
+            anchor = (cursor.x(), cursor.y())
+        else:
+            centre = self.mapToScene(self.viewport().rect().center())
+            anchor = (centre.x(), centre.y())
+        self._paste_top_left = self.snap(anchor)
+        self.redraw()
+
+    def cancel_paste(self):
+        self._paste_clipboard = None
+        self._paste_top_left = None
+        self.redraw()
+
+    def render_paste_preview(self):
+        if self._paste_clipboard is None or self._paste_top_left is None:
+            return
+        dx = self._paste_top_left[0] - self._paste_clipboard["bounds"][0]
+        dy = self._paste_top_left[1] - self._paste_clipboard["bounds"][1]
+        for source in self._paste_clipboard["entities"]:
+            ghost = copy.deepcopy(source)
+            # Preview is not a project entity; never resolve source hold
+            # tracks by its original ID when rendering the ghost.
+            ghost["id"] = "__stickrig_paste_preview__" + source["id"]
+            if ghost["kind"] == "stickman":
+                ghost["position"] = [ghost["position"][0] + dx,
+                                     ghost["position"][1] + dy]
+            else:
+                ghost["a"] = [ghost["a"][0] + dx, ghost["a"][1] + dy]
+                ghost["b"] = [ghost["b"][0] + dx, ghost["b"][1] + dy]
+            self._render_entity(ghost, self.editor.frame, z=90,
+                                opacity=0.40, ghost=True)
+        box = self._paste_clipboard["bounds"]
+        self._rect((self._paste_top_left[0], self._paste_top_left[1],
+                    box[2] - box[0], box[3] - box[1]),
+                   "#2d84cc", 1.5, z=100, opacity=0.72)
 
     def update_placement_preview(self):
         self.clear_placement_preview()
@@ -389,8 +442,25 @@ class Canvas(QGraphicsView):
                 demo = make_shape(kind, list(self.shape_start), list(self.shape_end))
                 self._render_entity(demo, self.editor.frame, z=60, opacity=0.5)
         self.update_placement_preview()
+        if len(self.editor.selected_ids) > 1 and not self.editor.playing:
+            try:
+                left, top, right, bottom = selection_bounds(
+                    self.editor.project, self.editor.frame, self.editor.selected_ids)
+                self._rect((left - 7, top - 7, right - left + 14, bottom - top + 14),
+                           "#2679bf", 1.6, z=74)
+            except ValueError:
+                pass
+        if self.marquee_start is not None and self.marquee_end is not None:
+            x1, y1 = self.marquee_start
+            x2, y2 = self.marquee_end
+            rectangle = QRectF(QPointF(x1, y1), QPointF(x2, y2)).normalized()
+            pen = QPen(QColor("#2679bf"), 1.2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self.graphics.addRect(rectangle, pen,
+                                  QBrush(QColor(50, 145, 230, 36))).setZValue(120)
+        self.render_paste_preview()
 
-    def _pick(self, point: tuple[float, float], *, segment=False, cycle=True):
+    def _pick(self, point: tuple[float, float], *, segment=False, cycle=True, allow_handles=True):
         """Choose the nearest handle, not the first joint in rig order.
 
         At small viewport zoom the hit radii of knees/ankles can overlap.
@@ -409,7 +479,7 @@ class Canvas(QGraphicsView):
             ident = e["id"]
             if e["kind"] == "stickman":
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
-                if not segment:
+                if not segment and allow_handles:
                     for joint, xy in points.items():
                         if (e.get("rig_style") == "simple" and
                                 joint in SIMPLE_HIDDEN_LINKS and joint != "head"):
@@ -425,7 +495,7 @@ class Canvas(QGraphicsView):
                         bodies.append((distance, order, ident,
                                        joint if segment else None))
             elif e["kind"] == "line":
-                if not segment:
+                if not segment and allow_handles:
                     for endpoint in ("a", "b"):
                         distance = math.dist(point, e[endpoint])
                         if distance <= radius:
@@ -466,8 +536,18 @@ class Canvas(QGraphicsView):
             return
         if event.button() != Qt.MouseButton.LeftButton or self.editor.playing:
             return super().mousePressEvent(event)
+
         raw_point = self.to_world(event)
         point = self.snap(raw_point)
+        if self._paste_clipboard is not None:
+            # Paste is a single intentional click after a reversible ghost.
+            clip = self._paste_clipboard
+            target = self.snap(raw_point)
+            self._paste_clipboard = self._paste_top_left = None
+            self.editor.commit_paste(clip, target)
+            event.accept()
+            return
+
         tool = self.editor.tool
         if tool == "stickman":
             self.editor.add_stickman(point)
@@ -477,11 +557,48 @@ class Canvas(QGraphicsView):
             self.shape_end = point
             self.redraw()
             return
+
+        chosen = self.editor.selected_ids
+        multi = len(chosen) > 1
+        mods = event.modifiers()
         eid, joint = self._pick(
-            raw_point, segment=bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+            raw_point, segment=bool(mods & Qt.KeyboardModifier.AltModifier),
+            allow_handles=not multi
         )
-        self.editor.select_entity(eid, joint)
-        if eid:
+        if eid is not None and (mods & Qt.KeyboardModifier.ControlModifier):
+            new_selection = chosen ^ {eid}
+            self.editor.select_entities(new_selection)
+            self.redraw()
+            event.accept()
+            return
+        if eid is not None and (mods & Qt.KeyboardModifier.ShiftModifier) and eid not in chosen:
+            self.editor.select_entities(chosen | {eid})
+            self.redraw()
+            event.accept()
+            return
+
+        if eid is None:
+            self.marquee_start = raw_point
+            self.marquee_end = None
+            self.marquee_previous = chosen.copy()
+            self.marquee_modifiers = mods
+            if not mods & (Qt.KeyboardModifier.ControlModifier |
+                           Qt.KeyboardModifier.ShiftModifier):
+                self.editor.select_entities([])
+            self.redraw()
+            event.accept()
+            return
+
+        if multi and eid in chosen:
+            self._group_drag_origins = transform_origins(
+                self.editor.project, self.editor.frame, chosen)
+            self._group_drag_bounds = selection_bounds(
+                self.editor.project, self.editor.frame, chosen)
+            self._group_drag_start = raw_point
+            self._group_drag_started = False
+            self.drag_before = self.editor.history.capture(self.editor.project)
+        else:
+            self.editor.select_entity(eid, joint)
             self.drag_id = eid
             self.drag_joint = joint
             self.drag_start = point
@@ -503,7 +620,9 @@ class Canvas(QGraphicsView):
         Bypass repeated-click selection cycling for this precise gesture.
         """
         if (event.button() != Qt.MouseButton.LeftButton or
-                self.editor.playing or self.editor.tool != "select"):
+                self.editor.playing or self.editor.tool != "select" or
+                self._paste_clipboard is not None or
+                len(self.editor.selected_ids) > 1):
             return super().mouseDoubleClickEvent(event)
         ident, joint = self._pick(self.to_world(event), cycle=False)
         if ident is None or joint is None:
@@ -534,6 +653,31 @@ class Canvas(QGraphicsView):
             return
         if self.shape_start is not None:
             self.shape_end = point
+            self.redraw()
+            return
+        if self._paste_clipboard is not None:
+            self._paste_top_left = self.snap(raw_point)
+            self.redraw()
+            return
+        if self.marquee_start is not None:
+            distance = math.dist(raw_point, self.marquee_start)
+            if (event.buttons() & Qt.MouseButton.LeftButton and
+                    distance * max(.05, abs(self.transform().m11())) >= 5):
+                self.marquee_end = raw_point
+                self.redraw()
+            return
+        if self._group_drag_origins is not None and self._group_drag_start is not None:
+            delta_raw = (raw_point[0] - self._group_drag_start[0],
+                         raw_point[1] - self._group_drag_start[1])
+            scale = max(.05, abs(self.transform().m11()))
+            if not self._group_drag_started and math.hypot(*delta_raw) * scale < 4:
+                return
+            self._group_drag_started = True
+            bx, by = self._group_drag_bounds[:2]
+            snapped = self.snap((bx + delta_raw[0], by + delta_raw[1]))
+            delta = (snapped[0] - bx, snapped[1] - by)
+            move_from_origins(self.editor.project, self.editor.frame,
+                              self._group_drag_origins, delta)
             self.redraw()
             return
         if self.drag_id is not None and self.drag_start is not None:
@@ -590,6 +734,36 @@ class Canvas(QGraphicsView):
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mouseReleaseEvent(event)
+        if self.marquee_start is not None:
+            start, end = self.marquee_start, self.marquee_end
+            mods = self.marquee_modifiers
+            original = self.marquee_previous
+            self.marquee_start = self.marquee_end = None
+            self.marquee_previous = set()
+            if end is not None:
+                found = set(ids_in_rectangle(
+                    self.editor.project, self.editor.frame,
+                    (start[0], start[1], end[0], end[1])
+                ))
+                if mods & Qt.KeyboardModifier.ControlModifier:
+                    found = original ^ found
+                elif mods & Qt.KeyboardModifier.ShiftModifier:
+                    found = original | found
+                self.editor.select_entities(found)
+            self.redraw()
+            event.accept()
+            return
+        if self._group_drag_origins is not None:
+            self._group_drag_origins = self._group_drag_bounds = self._group_drag_start = None
+            changed = self._group_drag_started
+            self._group_drag_started = False
+            if changed:
+                self.editor.history.commit(self.drag_before, self.editor.project)
+                self.editor.after_change()
+            self.drag_before = None
+            self.redraw()
+            event.accept()
+            return
         if self.shape_start:
             point = self.snap(self.to_world(event))
             start = self.shape_start
@@ -619,6 +793,8 @@ class MainWindow(QMainWindow):
         self.saved_snapshot = self.project.to_dict()
         self.selected_id: str | None = None
         self.selected_joint: str | None = None
+        self.selected_ids: set[str] = set()
+        self._copy_buffer = None
         self.tool = "select"
         self.playing = False
         self.timer = QTimer(self)
@@ -1187,7 +1363,11 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.escape_action)
         for title, callback, shortcut in [("Undo", self.undo, "Ctrl+Z"),
                                           ("Redo", self.redo, "Ctrl+Y"),
-                                          ("Delete selected object", self.delete_selected, "Delete")]:
+                                          ("Select all on current frame", self.select_all, "Ctrl+A"),
+                                          ("Copy selected", self.copy_selected, "Ctrl+C"),
+                                          ("Paste at cursor…", self.start_paste, "Ctrl+V"),
+                                          ("Paste at original position", self.paste_in_place, "Ctrl+Shift+V"),
+                                          ("Delete selected objects", self.delete_selected, "Delete")]:
             action = QAction(title, self)
             action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(callback)
@@ -1227,27 +1407,100 @@ class MainWindow(QMainWindow):
         return current != old
 
     def escape_to_select(self):
-        """Exit element placement and return to editing in one keystroke."""
+        """Esc cancels pending paste/marquee; otherwise leaves placement mode."""
+        if self.canvas._paste_clipboard is not None:
+            self.canvas.cancel_paste()
+            return
+        if self.canvas.marquee_start is not None:
+            self.select_entities(self.canvas.marquee_previous)
+        self.canvas.marquee_start = self.canvas.marquee_end = None
+        self.canvas.marquee_previous = set()
         self.canvas.shape_start = self.canvas.shape_end = None
         self.canvas.clear_placement_preview()
         self.select_tool("select")
         self.canvas.redraw()
 
     def select_tool(self, key):
+        if key != "select" and self.canvas._paste_clipboard is not None:
+            self.canvas.cancel_paste()
         self.tool = key
         self.canvas.update_placement_preview()
         for name, action in self.tool_actions.items():
             action.setChecked(key == name)
-        self.statusBar().showMessage({"select": "Drag joint to pose; Shift+joint to shorten; Alt+bone to bend; Esc exits placement.",
+        self.statusBar().showMessage({"select": "Drag joints to pose; drag empty space to select a group; Ctrl+C/V copy/paste; Esc cancels.",
                                       "stickman": "Click anywhere to add a stickman.",
                                       "line": "Drag to draw a line.", "rectangle": "Drag to draw a rectangle.",
                                       "circle": "Drag to draw an ellipse."}[key])
 
     def select_entity(self, entity_id, joint=None):
+        self.selected_ids = {entity_id} if entity_id else set()
         self.selected_id = entity_id
         self.selected_joint = joint
         self.refresh_inspector()
         self.update_canvas_coordinates(self._cursor_world)
+
+    def select_entities(self, ids):
+        """Multiple selected objects share one group transform, not joint handles."""
+        selected = set(ids)
+        if len(selected) == 1:
+            self.select_entity(next(iter(selected)))
+            return
+        self.selected_ids = selected
+        self.selected_id = self.selected_joint = None
+        self.refresh_inspector()
+        self.update_canvas_coordinates(self._cursor_world)
+
+    def select_all(self):
+        if self.playing:
+            return
+        ids = [e["id"] for e in visible_entities(self.project, self.frame)
+               if not get_layer(self.project, e["layer_id"])["locked"]]
+        self.select_entities(ids)
+        self.canvas.redraw()
+
+    def copy_selected(self):
+        if not self.selected_ids or self.playing:
+            return
+        try:
+            self._copy_buffer = copy_entities(self.project, self.frame, self.selected_ids)
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return
+        self.statusBar().showMessage(
+            f"Copied {len(self._copy_buffer['entities'])} object(s). Ctrl+V to place.", 4000
+        )
+
+    def start_paste(self):
+        """Ctrl+V previews at the mouse or visible centre; LMB commits, Esc cancels."""
+        if self._copy_buffer is None or self.playing:
+            return
+        try:
+            # Materialization validates layers before showing an invalid preview.
+            materialize_paste(self.project, self.frame, self._copy_buffer,
+                              tuple(self._copy_buffer["bounds"][:2]))
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return
+        self.select_tool("select")
+        self.canvas.start_paste_preview(self._copy_buffer)
+        self.statusBar().showMessage("Move to place copied objects; click to confirm, Esc to cancel.")
+
+    def paste_in_place(self):
+        if self._copy_buffer is None or self.playing:
+            return
+        self.canvas.cancel_paste()
+        self.commit_paste(self._copy_buffer, tuple(self._copy_buffer["bounds"][:2]))
+
+    def commit_paste(self, clipboard, top_left):
+        try:
+            clones = materialize_paste(self.project, self.frame, clipboard, top_left)
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return False
+        self.mutate(lambda: self.project.scene["entities"].extend(clones))
+        self.select_entities([e["id"] for e in clones])
+        self.canvas.redraw()
+        return True
 
     def update_canvas_coordinates(self, point):
         """Inspector-style coordinates in scene units, independent of viewport zoom."""
@@ -1256,6 +1509,9 @@ class MainWindow(QMainWindow):
             self.cursor_coords_label.setText("Cursor: —")
         else:
             self.cursor_coords_label.setText(f"Cursor  X: {point[0]:.1f}  Y: {point[1]:.1f}")
+        if len(self.selected_ids) > 1:
+            self.selection_coords_label.setText(f"{len(self.selected_ids)} objects selected")
+            return
         if not self.selected_id:
             self.selection_coords_label.setText("Selected: —")
             return
@@ -1329,12 +1585,10 @@ class MainWindow(QMainWindow):
         self.snap_check.setEnabled(grid["enabled"])
         # A frame-local selection cannot silently edit an object belonging to
         # another frame. Clear stale selection after insert, move or delete.
-        if self.selected_id and not any(
-            e["id"] == self.selected_id
-            for e in visible_entities(self.project, self.frame)
-        ):
-            self.selected_id = self.selected_joint = None
-            self.refresh_inspector()
+        visible_ids = {e["id"] for e in visible_entities(self.project, self.frame)}
+        stale = self.selected_ids - visible_ids
+        if stale:
+            self.select_entities(self.selected_ids & visible_ids)
         self.frame_spin.blockSignals(True)
         self.frame_spin.setMaximum(self.project.duration)
         self.frame_spin.setValue(self.frame + 1)
@@ -1416,7 +1670,9 @@ class MainWindow(QMainWindow):
         except ValueError:
             e = None
             self.selected_id = self.selected_joint = None
-        if not e:
+        if len(self.selected_ids) > 1:
+            self.info_label.setText(f"{len(self.selected_ids)} objects selected — move as a group")
+        elif not e:
             self.info_label.setText("Nothing selected")
         else:
             self.info_label.setText(f"{e['kind']} · {e['id']}\nLayer: {e['layer_id']}\nColor: {e['color']}" +
@@ -1490,16 +1746,18 @@ class MainWindow(QMainWindow):
             self.mutate(lambda: e.__setitem__("head_filled", bool(state)))
 
     def delete_selected(self):
-        if not self.selected_id:
+        if not self.selected_ids:
             return
-        e = get_entity(self.project, self.selected_id)
-        if not self.can_edit_layer(e["layer_id"]):
+        ids = self.selected_ids.copy()
+        if any(not self.can_edit_layer(get_entity(self.project, ident)["layer_id"])
+               for ident in ids):
             return
-        ident = self.selected_id
         def op():
-            self.project.scene["entities"] = [e for e in self.project.scene["entities"] if e["id"] != ident]
-            self.project.scene["tracks"] = [t for t in self.project.scene["tracks"] if t["target_id"] != ident]
-        self.selected_id = self.selected_joint = None
+            self.project.scene["entities"] = [e for e in self.project.scene["entities"]
+                                              if e["id"] not in ids]
+            self.project.scene["tracks"] = [t for t in self.project.scene["tracks"]
+                                            if t["target_id"] not in ids]
+        self.select_entities([])
         self.mutate(op)
 
     def change_fps(self, value):
@@ -1526,12 +1784,9 @@ class MainWindow(QMainWindow):
 
     def set_frame(self, frame):
         self.frame = max(0, min(self.project.duration - 1, frame))
-        if self.selected_id and not any(
-            e["id"] == self.selected_id
-            for e in visible_entities(self.project, self.frame)
-        ):
-            self.selected_id = self.selected_joint = None
-            self.refresh_inspector()
+        visible_ids = {e["id"] for e in visible_entities(self.project, self.frame)}
+        if not self.selected_ids.issubset(visible_ids):
+            self.select_entities(self.selected_ids & visible_ids)
         if self.playing and self.frame in self._play_sequence:
             self._play_cursor = self._play_sequence.index(self.frame)
         self.refresh(content_changed=False)
@@ -1645,7 +1900,9 @@ class MainWindow(QMainWindow):
         self.frame = 0
         self.path = None
         self.history = History()
+        self.selected_ids.clear()
         self.selected_id = self.selected_joint = None
+        self.canvas.cancel_paste()
         self.saved_snapshot = self.project.to_dict()
         self.refresh()
         self.restore_workspace()
@@ -1671,7 +1928,9 @@ class MainWindow(QMainWindow):
         self.path = path
         self.frame = 0
         self.history = History()
+        self.selected_ids.clear()
         self.selected_id = self.selected_joint = None
+        self.canvas.cancel_paste()
         self.saved_snapshot = self.project.to_dict()
         self.refresh()
         self.restore_workspace()
@@ -1746,15 +2005,20 @@ class MainWindow(QMainWindow):
             self.toggle_play()
 
     def about(self):
-        QMessageBox.information(self, "StickRig Studio 0.5.2",
-                                "StickRig Studio 0.5.2 — prototype\n\n"
+        QMessageBox.information(self, "StickRig Studio 0.6",
+                                "StickRig Studio 0.6 — prototype\n\n"
                                 "Esc: leave placement and return to Select / Move.\n"
                                 "Drag joint to pose; Shift+drag adjusts length independently of Snap.\n"
-                                "Reset length to 100% in Inspector; near 100% Shift drag snaps back.\n"
+                                "Double-click joint: return its segment to 100% length.\n"
                                 "Alt+drag a bone bends it; Inspector edits length and curvature.\n"
                                 "Drag line endpoints to rotate/shorten a staff; Alt+drag line to curve.\n"
                                 "Grid / Show / Snap / Step: separate scene-pixel grid controls.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
+                                "Marquee: drag from empty canvas to select several objects.\n"
+                                "One selected object: pose joints; several: drag the group together.\n"
+                                "Ctrl+A: select all; Shift+click: add; Ctrl+click: toggle.\n"
+                                "Ctrl+C/V: copy and preview placement, click to confirm; Esc cancels.\n"
+                                "Ctrl+Shift+V: paste on original scene coordinates.\n"
                                 "Frames: + adds blank frame; Ctrl+D duplicates pose; active frame stays in view.\n"
                                 "Playback is a movable bottom dock above Elements.\n"
                                 "Elements follow the pointer as a transparent placement preview.\n"

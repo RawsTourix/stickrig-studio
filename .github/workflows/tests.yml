@@ -33,5 +33,18 @@ jobs:
             timeout 120s python -X faulthandler -m pytest -vv "tests/test_long_frame_workflow.py::$test_name" || status=1
           done
           exit "$status"
+      - name: Multi-selection, frame-local paste and ghost preview (isolated Qt processes)
+        run: |
+          status=0
+          for test_name in \
+            test_drag_empty_area_marquee_selects_only_objects_inside_rectangle \
+            test_multi_selection_group_move_and_single_undo \
+            test_copy_paste_ghost_to_blank_frame_without_source_changes \
+            test_escape_cancels_paste_and_paste_in_place_keeps_coordinates \
+            test_ctrl_toggle_and_shift_add_do_not_start_unintended_drag \
+            test_select_all_and_escape_abort_marquee_without_losing_previous_selection; do
+            timeout 120s python -X faulthandler -m pytest -vv "tests/test_multi_selection_gui.py::$test_name" || status=1
+          done
+          exit "$status"
       - name: Unit tests and headless GUI smoke
-        run: timeout 120s python -X faulthandler -m pytest -vv --ignore=tests/test_long_frame_workflow.py
+        run: timeout 120s python -X faulthandler -m pytest -vv --ignore=tests/test_long_frame_workflow.py --ignore=tests/test_multi_selection_gui.py

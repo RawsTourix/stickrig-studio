@@ -2,7 +2,7 @@
 
 **StickRig Studio** is an experimental Windows-first 2D stick-figure animation editor. It is inspired by flipbooks on sticky notes: move a joint, create the next frame, and watch the figure move.
 
-**Status: v0.5.3 prototype (double-click joint for instant original-length reset).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
+**Status: v0.6 prototype (marquee selection, grouped moves and previewed frame-local copy/paste).** The repository now contains working animation-model code, a Qt desktop interface and a headless command-line interface for structured edits. It is **not** a complete studio or production-ready release. The GUI has a CI smoke test; compatibility on a real Windows desktop requires user feedback.
 
 ## Quick start (Windows, Python 3.11+)
 
@@ -29,13 +29,18 @@ Alternatively run `stickrig` or `stickrig-cli` after installation. Video export 
 
 For a simpler first Windows launch, double-click `setup_windows.bat` once and then `run_windows.bat` to open the editor. The batch scripts only create a local virtual environment, install Python requirements, and start the app.
 
-## Controls in v0.5.3
+## Controls in v0.6
 
 | Tool | Action |
 | --- | --- |
 | `+ Stickman` | Click to place a minimalist stickman (one torso, bent arms and legs); dimensions start from the scene's grid step |
 | `Esc` | Immediately exit element placement and return to **Select / Move** |
 | `Select / Move` | Click an object to select it; click empty space to deselect. Drag a joint to pose; **Shift+drag joint** changes apparent limb length without grid rounding (magnet near 100%); **double-click a joint** restores its default length; **Alt+drag bone** bends it |
+| Drag from empty space | Draw a dashed selection rectangle; every editable object touching it is selected. One selected object keeps joint handles; multiple objects get one group outline |
+| Group selection | Drag a selected member to move all selected objects together on the active frame; Undo restores the entire movement in one step |
+| `Ctrl+A` / `Shift+click` / `Ctrl+click` | Select all editable visible objects / add to selection / toggle an object's selection |
+| `Ctrl+C` / `Ctrl+V` | Copy the selected drawing in the application's clipboard; paste shows a translucent cursor-following preview. Click to place, Esc to cancel |
+| `Ctrl+Shift+V` | Paste independently at the same original scene coordinates, useful between animation frames |
 | `Line`, `Rectangle`, `Ellipse` | Draw primitives; **drag line endpoints** to shorten/rotate props (e.g. staffs), **Alt+drag line** or Inspector to bend a line |
 | `+` under Frames | Insert a **completely empty** frame after the current one; do not inherit objects or a background |
 | Duplicate frame (`Ctrl+D` or copy button) | Create an **independent editable copy** of the current frame's stickmen and shapes |
@@ -58,6 +63,8 @@ For a simpler first Windows launch, double-click `setup_windows.bat` once and th
 **Performance:** the vector editing grid uses QPainter background rendering and allocates **no graphics item per grid line**. Grid redraw follows toolbar changes without rebuilding frame objects. Only visible frame thumbnails are rasterized directly at 128-pixel width. Their visible range is derived from actual item geometry (not a potentially empty hit-test in card margins), keeping long timelines responsive. A lightweight item delegate paints quick buttons without creating separate widgets per frame. During reordering, only visible rows participate in Qt animations with continuous 16ms retargeting and a smoothed insertion marker. They are updated after scene changes, not on every playback tick. Projects created with earlier versions retain their existing frame count.
 
 **Frame content:** new stickmen and shapes belong only to the frame where they were created. They do **not** automatically become background objects or appear in adjacent frames. An explicit duplicate makes new object IDs; the + button makes a blank frame. For compatibility, older files with objects lacking `frame_index` retain their historical global/held behavior. This old information cannot be inferred safely: use a new project to verify the new default or explicitly clean up a legacy project. Onion skin and the translucent placement preview are editor overlays, not extra saved objects.
+
+**Selection and clipboard:** grouped selection is temporary UI state, not a new persistent scene group. Clipboard contents are stored in-app for this prototype (not the Windows system clipboard). Each pasted object gets a new ID and belongs to the current frame, with source pose/geometry preserved and no cross-frame editing. No persistent attachments, world pins, IK or interpolation are introduced by this change. The paste ghost and selection rectangle never appear in exports.
 
 **Frame visibility:** hidden frames remain editable and in the Frames panel, but are excluded from playback and MP4 export. At least one frame must remain visible; hiding and moving frames are undoable. Frame indices in JSON/CLI are zero-based, while the GUI labels frames from 1.
 
@@ -103,6 +110,7 @@ src/stickrig/automation.py    # Validated atomic AI-friendly operations
 src/stickrig/cli.py           # Headless CLI for inspect/apply/render/export
 src/stickrig/app.py           # PySide6 GUI, navigation, dockable panels and pose interaction
 src/stickrig/frames_ui.py     # Frame strip actions, context menu and drag handling
+src/stickrig/selection.py     # Pure selection geometry, multi-move and safe clipboard copy/paste
 src/stickrig/i18n.py          # Initial EN/RU translation catalog
 tests/                        # Core, rendering, AI patch and Qt smoke tests
 examples/                     # Example project and an AI-style scene patch
@@ -143,6 +151,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [20 — Long animation workflow](docs/20-long-frames-and-joints-v0.5.2.md) | Reliable thumbnails and frame focus, nearest joint picking and resettable limb length |
 | [21 — Double-click reset](docs/21-double-click-rest-length-v0.5.3.md) | Restore a limb's original length directly from its joint handle |
 | [22 — Interaction & automation RFC](docs/22-interaction-links-inbetween-ai-rfc.md) | Draft: multi-selection, attachments, IK pins, in-between frames, AI extension and contextual ribbon |
+| [23 — Marquee and clipboard v0.6](docs/23-marquee-multiselect-clipboard-v0.6.md) | Implemented group selection, movement and paste preview; limitations and regression tests |
 
 ## Licensing and attribution
 
