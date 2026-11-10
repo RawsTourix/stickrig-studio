@@ -32,6 +32,9 @@ from .model import (History, Project, RIG_OFFSETS, SIMPLE_HIDDEN_LINKS,
                     stickman_strokes, value_at)
 from .render import export_mp4, render_image, visible_entities
 from .frames_ui import FrameStrip
+from .selection import (copy_entities, entity_bounds, ids_in_rectangle,
+                        materialize_paste, move_from_origins, selection_bounds,
+                        transform_origins)
 from .model import move_frame, set_frame_hidden, visible_frame_indices
 
 
@@ -619,6 +622,8 @@ class MainWindow(QMainWindow):
         self.saved_snapshot = self.project.to_dict()
         self.selected_id: str | None = None
         self.selected_joint: str | None = None
+        self.selected_ids: set[str] = set()
+        self._copy_buffer = None
         self.tool = "select"
         self.playing = False
         self.timer = QTimer(self)
@@ -1187,7 +1192,10 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.escape_action)
         for title, callback, shortcut in [("Undo", self.undo, "Ctrl+Z"),
                                           ("Redo", self.redo, "Ctrl+Y"),
-                                          ("Delete selected object", self.delete_selected, "Delete")]:
+                                          ("Copy selected", self.copy_selected, "Ctrl+C"),
+                                          ("Paste at cursor…", self.start_paste, "Ctrl+V"),
+                                          ("Paste at original position", self.paste_in_place, "Ctrl+Shift+V"),
+                                          ("Delete selected objects", self.delete_selected, "Delete")]:
             action = QAction(title, self)
             action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(callback)
@@ -1227,13 +1235,19 @@ class MainWindow(QMainWindow):
         return current != old
 
     def escape_to_select(self):
-        """Exit element placement and return to editing in one keystroke."""
+        """Esc cancels pending paste/marquee; otherwise leaves placement mode."""
+        if self.canvas._paste_clipboard is not None:
+            self.canvas.cancel_paste()
+            return
+        self.canvas.marquee_start = self.canvas.marquee_end = None
         self.canvas.shape_start = self.canvas.shape_end = None
         self.canvas.clear_placement_preview()
         self.select_tool("select")
         self.canvas.redraw()
 
     def select_tool(self, key):
+        if key != "select" and self.canvas._paste_clipboard is not None:
+            self.canvas.cancel_paste()
         self.tool = key
         self.canvas.update_placement_preview()
         for name, action in self.tool_actions.items():
@@ -1244,10 +1258,66 @@ class MainWindow(QMainWindow):
                                       "circle": "Drag to draw an ellipse."}[key])
 
     def select_entity(self, entity_id, joint=None):
+        self.selected_ids = {entity_id} if entity_id else set()
         self.selected_id = entity_id
         self.selected_joint = joint
         self.refresh_inspector()
         self.update_canvas_coordinates(self._cursor_world)
+
+    def select_entities(self, ids):
+        """Multiple selected objects share one group transform, not joint handles."""
+        selected = set(ids)
+        if len(selected) == 1:
+            self.select_entity(next(iter(selected)))
+            return
+        self.selected_ids = selected
+        self.selected_id = self.selected_joint = None
+        self.refresh_inspector()
+        self.update_canvas_coordinates(self._cursor_world)
+
+    def copy_selected(self):
+        if not self.selected_ids or self.playing:
+            return
+        try:
+            self._copy_buffer = copy_entities(self.project, self.frame, self.selected_ids)
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return
+        self.statusBar().showMessage(
+            f"Copied {len(self._copy_buffer['entities'])} object(s). Ctrl+V to place.", 4000
+        )
+
+    def start_paste(self):
+        """Ctrl+V previews at the mouse or visible centre; LMB commits, Esc cancels."""
+        if self._copy_buffer is None or self.playing:
+            return
+        try:
+            # Materialization validates layers before showing an invalid preview.
+            materialize_paste(self.project, self.frame, self._copy_buffer,
+                              tuple(self._copy_buffer["bounds"][:2]))
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return
+        self.select_tool("select")
+        self.canvas.start_paste_preview(self._copy_buffer)
+        self.statusBar().showMessage("Move to place copied objects; click to confirm, Esc to cancel.")
+
+    def paste_in_place(self):
+        if self._copy_buffer is None or self.playing:
+            return
+        self.canvas.cancel_paste()
+        self.commit_paste(self._copy_buffer, tuple(self._copy_buffer["bounds"][:2]))
+
+    def commit_paste(self, clipboard, top_left):
+        try:
+            clones = materialize_paste(self.project, self.frame, clipboard, top_left)
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return False
+        self.mutate(lambda: self.project.scene["entities"].extend(clones))
+        self.select_entities([e["id"] for e in clones])
+        self.canvas.redraw()
+        return True
 
     def update_canvas_coordinates(self, point):
         """Inspector-style coordinates in scene units, independent of viewport zoom."""
@@ -1256,6 +1326,9 @@ class MainWindow(QMainWindow):
             self.cursor_coords_label.setText("Cursor: —")
         else:
             self.cursor_coords_label.setText(f"Cursor  X: {point[0]:.1f}  Y: {point[1]:.1f}")
+        if len(self.selected_ids) > 1:
+            self.selection_coords_label.setText(f"{len(self.selected_ids)} objects selected")
+            return
         if not self.selected_id:
             self.selection_coords_label.setText("Selected: —")
             return
@@ -1329,12 +1402,10 @@ class MainWindow(QMainWindow):
         self.snap_check.setEnabled(grid["enabled"])
         # A frame-local selection cannot silently edit an object belonging to
         # another frame. Clear stale selection after insert, move or delete.
-        if self.selected_id and not any(
-            e["id"] == self.selected_id
-            for e in visible_entities(self.project, self.frame)
-        ):
-            self.selected_id = self.selected_joint = None
-            self.refresh_inspector()
+        visible_ids = {e["id"] for e in visible_entities(self.project, self.frame)}
+        stale = self.selected_ids - visible_ids
+        if stale:
+            self.select_entities(self.selected_ids & visible_ids)
         self.frame_spin.blockSignals(True)
         self.frame_spin.setMaximum(self.project.duration)
         self.frame_spin.setValue(self.frame + 1)
@@ -1416,7 +1487,9 @@ class MainWindow(QMainWindow):
         except ValueError:
             e = None
             self.selected_id = self.selected_joint = None
-        if not e:
+        if len(self.selected_ids) > 1:
+            self.info_label.setText(f"{len(self.selected_ids)} objects selected — move as a group")
+        elif not e:
             self.info_label.setText("Nothing selected")
         else:
             self.info_label.setText(f"{e['kind']} · {e['id']}\nLayer: {e['layer_id']}\nColor: {e['color']}" +
@@ -1490,16 +1563,18 @@ class MainWindow(QMainWindow):
             self.mutate(lambda: e.__setitem__("head_filled", bool(state)))
 
     def delete_selected(self):
-        if not self.selected_id:
+        if not self.selected_ids:
             return
-        e = get_entity(self.project, self.selected_id)
-        if not self.can_edit_layer(e["layer_id"]):
+        ids = self.selected_ids.copy()
+        if any(not self.can_edit_layer(get_entity(self.project, ident)["layer_id"])
+               for ident in ids):
             return
-        ident = self.selected_id
         def op():
-            self.project.scene["entities"] = [e for e in self.project.scene["entities"] if e["id"] != ident]
-            self.project.scene["tracks"] = [t for t in self.project.scene["tracks"] if t["target_id"] != ident]
-        self.selected_id = self.selected_joint = None
+            self.project.scene["entities"] = [e for e in self.project.scene["entities"]
+                                              if e["id"] not in ids]
+            self.project.scene["tracks"] = [t for t in self.project.scene["tracks"]
+                                            if t["target_id"] not in ids]
+        self.select_entities([])
         self.mutate(op)
 
     def change_fps(self, value):
@@ -1526,12 +1601,9 @@ class MainWindow(QMainWindow):
 
     def set_frame(self, frame):
         self.frame = max(0, min(self.project.duration - 1, frame))
-        if self.selected_id and not any(
-            e["id"] == self.selected_id
-            for e in visible_entities(self.project, self.frame)
-        ):
-            self.selected_id = self.selected_joint = None
-            self.refresh_inspector()
+        visible_ids = {e["id"] for e in visible_entities(self.project, self.frame)}
+        if not self.selected_ids.issubset(visible_ids):
+            self.select_entities(self.selected_ids & visible_ids)
         if self.playing and self.frame in self._play_sequence:
             self._play_cursor = self._play_sequence.index(self.frame)
         self.refresh(content_changed=False)
@@ -1645,7 +1717,9 @@ class MainWindow(QMainWindow):
         self.frame = 0
         self.path = None
         self.history = History()
+        self.selected_ids.clear()
         self.selected_id = self.selected_joint = None
+        self.canvas.cancel_paste()
         self.saved_snapshot = self.project.to_dict()
         self.refresh()
         self.restore_workspace()
@@ -1671,7 +1745,9 @@ class MainWindow(QMainWindow):
         self.path = path
         self.frame = 0
         self.history = History()
+        self.selected_ids.clear()
         self.selected_id = self.selected_joint = None
+        self.canvas.cancel_paste()
         self.saved_snapshot = self.project.to_dict()
         self.refresh()
         self.restore_workspace()
