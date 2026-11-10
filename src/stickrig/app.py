@@ -222,6 +222,9 @@ class Canvas(QGraphicsView):
         dy = self._paste_top_left[1] - self._paste_clipboard["bounds"][1]
         for source in self._paste_clipboard["entities"]:
             ghost = copy.deepcopy(source)
+            # Preview is not a project entity; never resolve source hold
+            # tracks by its original ID when rendering the ghost.
+            ghost["id"] = "__stickrig_paste_preview__" + source["id"]
             if ghost["kind"] == "stickman":
                 ghost["position"] = [ghost["position"][0] + dx,
                                      ghost["position"][1] + dy]
