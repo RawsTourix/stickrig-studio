@@ -455,7 +455,7 @@ class Canvas(QGraphicsView):
                                   QBrush(QColor(50, 145, 230, 36))).setZValue(120)
         self.render_paste_preview()
 
-    def _pick(self, point: tuple[float, float], *, segment=False, cycle=True, handles=True):
+    def _pick(self, point: tuple[float, float], *, segment=False, cycle=True, allow_handles=True):
         """Choose the nearest handle, not the first joint in rig order.
 
         At small viewport zoom the hit radii of knees/ankles can overlap.
@@ -474,7 +474,7 @@ class Canvas(QGraphicsView):
             ident = e["id"]
             if e["kind"] == "stickman":
                 points, _ = joints_at(self.editor.project, e, self.editor.frame)
-                if not segment and handles:
+                if not segment and allow_handles:
                     for joint, xy in points.items():
                         if (e.get("rig_style") == "simple" and
                                 joint in SIMPLE_HIDDEN_LINKS and joint != "head"):
@@ -490,7 +490,7 @@ class Canvas(QGraphicsView):
                         bodies.append((distance, order, ident,
                                        joint if segment else None))
             elif e["kind"] == "line":
-                if not segment and handles:
+                if not segment and allow_handles:
                     for endpoint in ("a", "b"):
                         distance = math.dist(point, e[endpoint])
                         if distance <= radius:
@@ -531,8 +531,18 @@ class Canvas(QGraphicsView):
             return
         if event.button() != Qt.MouseButton.LeftButton or self.editor.playing:
             return super().mousePressEvent(event)
+
         raw_point = self.to_world(event)
         point = self.snap(raw_point)
+        if self._paste_clipboard is not None:
+            # Paste is a single intentional click after a reversible ghost.
+            clip = self._paste_clipboard
+            target = self.snap(raw_point)
+            self._paste_clipboard = self._paste_top_left = None
+            self.editor.commit_paste(clip, target)
+            event.accept()
+            return
+
         tool = self.editor.tool
         if tool == "stickman":
             self.editor.add_stickman(point)
@@ -542,11 +552,48 @@ class Canvas(QGraphicsView):
             self.shape_end = point
             self.redraw()
             return
+
+        chosen = self.editor.selected_ids
+        multi = len(chosen) > 1
+        mods = event.modifiers()
         eid, joint = self._pick(
-            raw_point, segment=bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+            raw_point, segment=bool(mods & Qt.KeyboardModifier.AltModifier),
+            allow_handles=not multi
         )
-        self.editor.select_entity(eid, joint)
-        if eid:
+        if eid is not None and (mods & Qt.KeyboardModifier.ControlModifier):
+            new_selection = chosen ^ {eid}
+            self.editor.select_entities(new_selection)
+            self.redraw()
+            event.accept()
+            return
+        if eid is not None and (mods & Qt.KeyboardModifier.ShiftModifier) and eid not in chosen:
+            self.editor.select_entities(chosen | {eid})
+            self.redraw()
+            event.accept()
+            return
+
+        if eid is None:
+            self.marquee_start = raw_point
+            self.marquee_end = None
+            self.marquee_previous = chosen.copy()
+            self.marquee_modifiers = mods
+            if not mods & (Qt.KeyboardModifier.ControlModifier |
+                           Qt.KeyboardModifier.ShiftModifier):
+                self.editor.select_entities([])
+            self.redraw()
+            event.accept()
+            return
+
+        if multi and eid in chosen:
+            self._group_drag_origins = transform_origins(
+                self.editor.project, self.editor.frame, chosen)
+            self._group_drag_bounds = selection_bounds(
+                self.editor.project, self.editor.frame, chosen)
+            self._group_drag_start = raw_point
+            self._group_drag_started = False
+            self.drag_before = self.editor.history.capture(self.editor.project)
+        else:
+            self.editor.select_entity(eid, joint)
             self.drag_id = eid
             self.drag_joint = joint
             self.drag_start = point
@@ -568,7 +615,9 @@ class Canvas(QGraphicsView):
         Bypass repeated-click selection cycling for this precise gesture.
         """
         if (event.button() != Qt.MouseButton.LeftButton or
-                self.editor.playing or self.editor.tool != "select"):
+                self.editor.playing or self.editor.tool != "select" or
+                self._paste_clipboard is not None or
+                len(self.editor.selected_ids) > 1):
             return super().mouseDoubleClickEvent(event)
         ident, joint = self._pick(self.to_world(event), cycle=False)
         if ident is None or joint is None:
@@ -599,6 +648,31 @@ class Canvas(QGraphicsView):
             return
         if self.shape_start is not None:
             self.shape_end = point
+            self.redraw()
+            return
+        if self._paste_clipboard is not None:
+            self._paste_top_left = self.snap(raw_point)
+            self.redraw()
+            return
+        if self.marquee_start is not None:
+            distance = math.dist(raw_point, self.marquee_start)
+            if (event.buttons() & Qt.MouseButton.LeftButton and
+                    distance * max(.05, abs(self.transform().m11())) >= 5):
+                self.marquee_end = raw_point
+                self.redraw()
+            return
+        if self._group_drag_origins is not None and self._group_drag_start is not None:
+            delta_raw = (raw_point[0] - self._group_drag_start[0],
+                         raw_point[1] - self._group_drag_start[1])
+            scale = max(.05, abs(self.transform().m11()))
+            if not self._group_drag_started and math.hypot(*delta_raw) * scale < 4:
+                return
+            self._group_drag_started = True
+            bx, by = self._group_drag_bounds[:2]
+            snapped = self.snap((bx + delta_raw[0], by + delta_raw[1]))
+            delta = (snapped[0] - bx, snapped[1] - by)
+            move_from_origins(self.editor.project, self.editor.frame,
+                              self._group_drag_origins, delta)
             self.redraw()
             return
         if self.drag_id is not None and self.drag_start is not None:
@@ -655,6 +729,36 @@ class Canvas(QGraphicsView):
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mouseReleaseEvent(event)
+        if self.marquee_start is not None:
+            start, end = self.marquee_start, self.marquee_end
+            mods = self.marquee_modifiers
+            original = self.marquee_previous
+            self.marquee_start = self.marquee_end = None
+            self.marquee_previous = set()
+            if end is not None:
+                found = set(ids_in_rectangle(
+                    self.editor.project, self.editor.frame,
+                    (start[0], start[1], end[0], end[1])
+                ))
+                if mods & Qt.KeyboardModifier.ControlModifier:
+                    found = original ^ found
+                elif mods & Qt.KeyboardModifier.ShiftModifier:
+                    found = original | found
+                self.editor.select_entities(found)
+            self.redraw()
+            event.accept()
+            return
+        if self._group_drag_origins is not None:
+            self._group_drag_origins = self._group_drag_bounds = self._group_drag_start = None
+            changed = self._group_drag_started
+            self._group_drag_started = False
+            if changed:
+                self.editor.history.commit(self.drag_before, self.editor.project)
+                self.editor.after_change()
+            self.drag_before = None
+            self.redraw()
+            event.accept()
+            return
         if self.shape_start:
             point = self.snap(self.to_world(event))
             start = self.shape_start
