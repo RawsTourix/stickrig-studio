@@ -2005,15 +2005,20 @@ class MainWindow(QMainWindow):
             self.toggle_play()
 
     def about(self):
-        QMessageBox.information(self, "StickRig Studio 0.5.2",
-                                "StickRig Studio 0.5.2 — prototype\n\n"
+        QMessageBox.information(self, "StickRig Studio 0.6",
+                                "StickRig Studio 0.6 — prototype\n\n"
                                 "Esc: leave placement and return to Select / Move.\n"
                                 "Drag joint to pose; Shift+drag adjusts length independently of Snap.\n"
-                                "Reset length to 100% in Inspector; near 100% Shift drag snaps back.\n"
+                                "Double-click joint: return its segment to 100% length.\n"
                                 "Alt+drag a bone bends it; Inspector edits length and curvature.\n"
                                 "Drag line endpoints to rotate/shorten a staff; Alt+drag line to curve.\n"
                                 "Grid / Show / Snap / Step: separate scene-pixel grid controls.\n"
                                 "Tools: click to add a stickman; drag to draw shapes.\n"
+                                "Marquee: drag from empty canvas to select several objects.\n"
+                                "One selected object: pose joints; several: drag the group together.\n"
+                                "Ctrl+A: select all; Shift+click: add; Ctrl+click: toggle.\n"
+                                "Ctrl+C/V: copy and preview placement, click to confirm; Esc cancels.\n"
+                                "Ctrl+Shift+V: paste on original scene coordinates.\n"
                                 "Frames: + adds blank frame; Ctrl+D duplicates pose; active frame stays in view.\n"
                                 "Playback is a movable bottom dock above Elements.\n"
                                 "Elements follow the pointer as a transparent placement preview.\n"
