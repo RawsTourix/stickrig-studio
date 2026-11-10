@@ -12,7 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QSettings
-from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QBrush, QCursor, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QColorDialog, QDoubleSpinBox,
     QDockWidget, QFileDialog, QFrame, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -202,8 +202,10 @@ class Canvas(QGraphicsView):
     def start_paste_preview(self, clipboard):
         """Cursor-anchored paste, with a visible-centre fallback off canvas."""
         self._paste_clipboard = copy.deepcopy(clipboard)
-        if self._hover_position is not None:
-            anchor = self._hover_position
+        mouse_pos = self.viewport().mapFromGlobal(QCursor.pos())
+        if self.viewport().rect().contains(mouse_pos):
+            cursor = self.mapToScene(mouse_pos)
+            anchor = (cursor.x(), cursor.y())
         else:
             centre = self.mapToScene(self.viewport().rect().center())
             anchor = (centre.x(), centre.y())
@@ -1361,6 +1363,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.escape_action)
         for title, callback, shortcut in [("Undo", self.undo, "Ctrl+Z"),
                                           ("Redo", self.redo, "Ctrl+Y"),
+                                          ("Select all on current frame", self.select_all, "Ctrl+A"),
                                           ("Copy selected", self.copy_selected, "Ctrl+C"),
                                           ("Paste at cursor…", self.start_paste, "Ctrl+V"),
                                           ("Paste at original position", self.paste_in_place, "Ctrl+Shift+V"),
@@ -1408,7 +1411,10 @@ class MainWindow(QMainWindow):
         if self.canvas._paste_clipboard is not None:
             self.canvas.cancel_paste()
             return
+        if self.canvas.marquee_start is not None:
+            self.select_entities(self.canvas.marquee_previous)
         self.canvas.marquee_start = self.canvas.marquee_end = None
+        self.canvas.marquee_previous = set()
         self.canvas.shape_start = self.canvas.shape_end = None
         self.canvas.clear_placement_preview()
         self.select_tool("select")
@@ -1421,7 +1427,7 @@ class MainWindow(QMainWindow):
         self.canvas.update_placement_preview()
         for name, action in self.tool_actions.items():
             action.setChecked(key == name)
-        self.statusBar().showMessage({"select": "Drag joint to pose; Shift+joint to shorten; Alt+bone to bend; Esc exits placement.",
+        self.statusBar().showMessage({"select": "Drag joints to pose; drag empty space to select a group; Ctrl+C/V copy/paste; Esc cancels.",
                                       "stickman": "Click anywhere to add a stickman.",
                                       "line": "Drag to draw a line.", "rectangle": "Drag to draw a rectangle.",
                                       "circle": "Drag to draw an ellipse."}[key])
@@ -1443,6 +1449,14 @@ class MainWindow(QMainWindow):
         self.selected_id = self.selected_joint = None
         self.refresh_inspector()
         self.update_canvas_coordinates(self._cursor_world)
+
+    def select_all(self):
+        if self.playing:
+            return
+        ids = [e["id"] for e in visible_entities(self.project, self.frame)
+               if not get_layer(self.project, e["layer_id"])["locked"]]
+        self.select_entities(ids)
+        self.canvas.redraw()
 
     def copy_selected(self):
         if not self.selected_ids or self.playing:
