@@ -194,3 +194,24 @@ def test_ctrl_toggle_and_shift_add_do_not_start_unintended_drag():
         assert w.project.to_dict() == before
     finally:
         close(w)
+
+
+def test_select_all_and_escape_abort_marquee_without_losing_previous_selection():
+    w = setup()
+    try:
+        first, second, third = select_two_shapes(w)
+        w.select_all()
+        assert w.selected_ids == {first, second, third}
+        w.select_entity(first)
+        start = w.canvas.mapFromScene(QPointF(80, 80))
+        end = w.canvas.mapFromScene(QPointF(300, 240))
+        QTest.mousePress(w.canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        move_with_button(w.canvas, end)
+        assert w.canvas.marquee_end is not None
+        w.escape_action.trigger()
+        assert w.selected_ids == {first}
+        assert w.canvas.marquee_start is None
+        QTest.mouseRelease(w.canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        assert w.selected_ids == {first}
+    finally:
+        close(w)

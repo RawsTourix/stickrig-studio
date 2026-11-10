@@ -41,7 +41,8 @@ jobs:
             test_multi_selection_group_move_and_single_undo \
             test_copy_paste_ghost_to_blank_frame_without_source_changes \
             test_escape_cancels_paste_and_paste_in_place_keeps_coordinates \
-            test_ctrl_toggle_and_shift_add_do_not_start_unintended_drag; do
+            test_ctrl_toggle_and_shift_add_do_not_start_unintended_drag \
+            test_select_all_and_escape_abort_marquee_without_losing_previous_selection; do
             timeout 120s python -X faulthandler -m pytest -vv "tests/test_multi_selection_gui.py::$test_name" || status=1
           done
           exit "$status"
