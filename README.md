@@ -142,6 +142,7 @@ GitHub Actions runs the test suite in a headless Linux Qt environment on pushes 
 | [19 — Workspace fixes](docs/19-window-grid-selection-v0.5.1.md) | Remember maximized window, responsive scene-wide grid and precise selection |
 | [20 — Long animation workflow](docs/20-long-frames-and-joints-v0.5.2.md) | Reliable thumbnails and frame focus, nearest joint picking and resettable limb length |
 | [21 — Double-click reset](docs/21-double-click-rest-length-v0.5.3.md) | Restore a limb's original length directly from its joint handle |
+| [22 — Interaction & automation RFC](docs/22-interaction-links-inbetween-ai-rfc.md) | Draft: multi-selection, attachments, IK pins, in-between frames, AI extension and contextual ribbon |
 
 ## Licensing and attribution
 
