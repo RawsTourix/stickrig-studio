@@ -87,7 +87,14 @@ def transform_origins(project: Project, frame: int, ids: Iterable[str]
         if get_layer(project, entity["layer_id"])["locked"]:
             raise ValueError("cannot move a locked-layer object")
         if entity["kind"] == "stickman":
-            origins[ident] = {"position": value_at(project, entity, "position", frame)}
+            snapshot = {"position": value_at(project, entity, "position", frame)}
+            if "frame_index" not in entity and frame + 1 < project.duration:
+                # A legacy hold track would otherwise carry this move into
+                # every later frame. Remember the old following pose and
+                # restore it at a boundary key after the edited frame.
+                snapshot["next_position"] = value_at(
+                    project, entity, "position", frame + 1)
+            origins[ident] = snapshot
         else:
             origins[ident] = {"a": copy.deepcopy(entity["a"]),
                               "b": copy.deepcopy(entity["b"])}
@@ -106,6 +113,9 @@ def move_from_origins(project: Project, frame: int,
         if entity["kind"] == "stickman":
             x, y = original["position"]
             set_key(project, ident, "position", frame, [x + dx, y + dy])
+            if "next_position" in original:
+                set_key(project, ident, "position", frame + 1,
+                        original["next_position"])
         else:
             entity["a"] = [original["a"][0] + dx, original["a"][1] + dy]
             entity["b"] = [original["b"][0] + dx, original["b"][1] + dy]

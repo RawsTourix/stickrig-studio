@@ -140,3 +140,19 @@ def test_copy_stickman_curve_and_length_are_unchanged_after_paste():
     clone["segment_scales"]["knee_l"] = 0.8
     assert hero["segment_scales"]["knee_l"] == 0.5
     p.validate()
+
+
+def test_group_move_legacy_hold_actor_does_not_leak_position_into_next_frame():
+    p = Project()
+    p.scene["duration_frames"] = 3
+    legacy = make_stickman(100, 140, entity_id="legacy")
+    p.scene["entities"].append(legacy)
+    set_key(p, "legacy", "position", 2, [340, 170])
+    before_next = value_at(p, legacy, "position", 1)
+    before_later = value_at(p, legacy, "position", 2)
+    origins = transform_origins(p, 0, ["legacy"])
+    move_from_origins(p, 0, origins, (40, -20))
+    assert value_at(p, legacy, "position", 0) == [140.0, 120.0]
+    assert value_at(p, legacy, "position", 1) == before_next
+    assert value_at(p, legacy, "position", 2) == before_later
+    p.validate()
